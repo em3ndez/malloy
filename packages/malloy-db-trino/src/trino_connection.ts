@@ -65,6 +65,12 @@ export interface TrinoManagerOptions {
   userAgent: string;
 }
 
+export type TrinoExtraConfigKey =
+  | 'ssl'
+  | 'session'
+  | 'extraCredential'
+  | 'extraHeaders';
+
 export interface TrinoConnectionConfiguration {
   server?: string;
   port?: number;
@@ -73,9 +79,8 @@ export interface TrinoConnectionConfiguration {
   user?: string;
   password?: string;
   setupSQL?: string;
-  extraConfig?: Partial<
-    Omit<ConnectionOptions, keyof TrinoConnectionConfiguration>
-  >;
+  source?: string;
+  extraConfig?: Partial<Record<TrinoExtraConfigKey, unknown>>;
 }
 
 export type TrinoConnectionOptions = ConnectionConfig;
@@ -153,7 +158,8 @@ class TrinoRunner implements BaseRunner {
       }
     }
     this.client = Trino.create({
-      ...config.extraConfig,
+      ...(config.extraConfig as Partial<ConnectionOptions>),
+      source: config.source,
       catalog: config.catalog,
       server,
       schema: config.schema,
