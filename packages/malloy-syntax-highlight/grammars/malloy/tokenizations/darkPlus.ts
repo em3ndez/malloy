@@ -1083,4 +1083,207 @@ export default [
       ],
     },
   ],
+  [
+    {
+      line: '#|',
+      tokens: [
+        {
+          startIndex: 0,
+          type: [
+            'source.malloy',
+            'comment.line.double-slash',
+            'support.type.property-name.json',
+          ],
+          color: '#9CDCFE',
+        },
+      ],
+    },
+    {
+      line: '  renderer=sparkline size=large',
+      tokens: [
+        {
+          startIndex: 0,
+          type: ['source.malloy', 'comment.line.double-slash'],
+          color: '#6A9955',
+        },
+        {
+          startIndex: 2,
+          type: [
+            'source.malloy',
+            'comment.line.double-slash',
+            'support.type.property-name.json',
+            'support.type.property-name.json',
+          ],
+          color: '#9CDCFE',
+        },
+        {
+          startIndex: 10,
+          type: [
+            'source.malloy',
+            'comment.line.double-slash',
+            'support.type.property-name.json',
+            'keyword.operator.comparison.ts',
+          ],
+          color: '#D4D4D4',
+        },
+        {
+          startIndex: 11,
+          type: [
+            'source.malloy',
+            'comment.line.double-slash',
+            'support.type.property-name.json',
+            'string.quoted',
+          ],
+          color: '#CE9178',
+        },
+        {
+          startIndex: 20,
+          type: ['source.malloy', 'comment.line.double-slash'],
+          color: '#6A9955',
+        },
+        {
+          startIndex: 21,
+          type: [
+            'source.malloy',
+            'comment.line.double-slash',
+            'support.type.property-name.json',
+            'support.type.property-name.json',
+          ],
+          color: '#9CDCFE',
+        },
+        {
+          startIndex: 25,
+          type: [
+            'source.malloy',
+            'comment.line.double-slash',
+            'support.type.property-name.json',
+            'keyword.operator.comparison.ts',
+          ],
+          color: '#D4D4D4',
+        },
+        {
+          startIndex: 26,
+          type: [
+            'source.malloy',
+            'comment.line.double-slash',
+            'support.type.property-name.json',
+            'string.quoted',
+          ],
+          color: '#CE9178',
+        },
+      ],
+    },
+    {
+      line: '|#',
+      tokens: [
+        {
+          startIndex: 0,
+          type: [
+            'source.malloy',
+            'comment.line.double-slash',
+            'support.type.property-name.json',
+          ],
+          color: '#9CDCFE',
+        },
+      ],
+    },
+    {
+      line: 'dimension: x is 1',
+      tokens: [
+        {
+          startIndex: 0,
+          type: ['source.malloy', 'keyword.control.dimension'],
+          color: '#C586C0',
+        },
+        {startIndex: 9, type: ['source.malloy'], color: '#000000'},
+        {
+          startIndex: 11,
+          type: ['source.malloy', 'variable.other'],
+          color: '#9CDCFE',
+        },
+        {startIndex: 12, type: ['source.malloy'], color: '#000000'},
+        {
+          startIndex: 13,
+          type: ['source.malloy', 'keyword.control.is'],
+          color: '#C586C0',
+        },
+        {startIndex: 15, type: ['source.malloy'], color: '#000000'},
+        {
+          startIndex: 16,
+          type: ['source.malloy', 'constant.numeric'],
+          color: '#B5CEA8',
+        },
+      ],
+    },
+  ],
+  [
+    {
+      line: '##|',
+      tokens: [
+        {
+          startIndex: 0,
+          type: [
+            'source.malloy',
+            'comment.line.double-slash',
+            'support.type.property-name.json',
+          ],
+          color: '#9CDCFE',
+        },
+      ],
+    },
+    {
+      line: '  model_tag=value',
+      tokens: [
+        {
+          startIndex: 0,
+          type: ['source.malloy', 'comment.line.double-slash'],
+          color: '#6A9955',
+        },
+        {
+          startIndex: 2,
+          type: [
+            'source.malloy',
+            'comment.line.double-slash',
+            'support.type.property-name.json',
+            'support.type.property-name.json',
+          ],
+          color: '#9CDCFE',
+        },
+        {
+          startIndex: 11,
+          type: [
+            'source.malloy',
+            'comment.line.double-slash',
+            'support.type.property-name.json',
+            'keyword.operator.comparison.ts',
+          ],
+          color: '#D4D4D4',
+        },
+        {
+          startIndex: 12,
+          type: [
+            'source.malloy',
+            'comment.line.double-slash',
+            'support.type.property-name.json',
+            'string.quoted',
+          ],
+          color: '#CE9178',
+        },
+      ],
+    },
+    {
+      line: '|##',
+      tokens: [
+        {
+          startIndex: 0,
+          type: [
+            'source.malloy',
+            'comment.line.double-slash',
+            'support.type.property-name.json',
+          ],
+          color: '#9CDCFE',
+        },
+      ],
+    },
+  ],
 ];
