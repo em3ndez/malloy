@@ -24,8 +24,7 @@
   "author": "",
   "dependencies": {
     "jest-diff": "^29.6.2",
-    "luxon": "^3.5.0",
-    "moo": "^0.5.3"
+    "luxon": "^3.5.0"
   },
   "devDependencies": {
     "@types/luxon": "^3.5.0",
