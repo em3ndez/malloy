@@ -1,2 +1,2 @@
 // generated with 'generate-version-file' script; do not edit manually
-export const MALLOY_VERSION = '0.0.370';
+export const MALLOY_VERSION = '0.0.371';
