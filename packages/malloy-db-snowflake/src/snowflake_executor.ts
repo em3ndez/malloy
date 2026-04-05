@@ -299,10 +299,10 @@ export class SnowflakeExecutor {
                 }
                 streamEnded = true;
                 options?.abortSignal?.removeEventListener('abort', onAbort);
-                stream.destroy();
                 if (cancelled) {
                   stmt.cancel();
                 }
+                stream.destroy();
                 onEnd();
                 releaseOnce();
               }
