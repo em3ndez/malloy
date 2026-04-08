@@ -71,6 +71,9 @@ export interface SnowflakeConnectionOptions {
   // Timeout for the statement
   timeoutMs?: number;
 
+  // Timeout for the variant schema sampling query (default 2 minutes)
+  schemaSampleTimeoutMs?: number;
+
   // SQL statements to run when a connection is acquired from the pool
   setupSQL?: string;
 }
@@ -239,6 +242,7 @@ export class SnowflakeConnection
   private scratchSpace?: namespace;
   private queryOptions: RunSQLOptions;
   private timeoutMs: number;
+  private schemaSampleTimeoutMs: number;
   private setupSQL: string | undefined;
 
   constructor(
@@ -261,6 +265,7 @@ export class SnowflakeConnection
     this.scratchSpace = options?.scratchSpace;
     this.queryOptions = options?.queryOptions ?? {};
     this.timeoutMs = options?.timeoutMs ?? TIMEOUT_MS;
+    this.schemaSampleTimeoutMs = options?.schemaSampleTimeoutMs ?? 15_000;
   }
 
   get dialectName(): string {
@@ -379,12 +384,18 @@ export class SnowflakeConnection
         structDef.fields.push({...malloyType, name});
       }
     }
-    // For these things, we need to sample the data to know the schema
+    // VARIANT, ARRAY, and OBJECT columns don't have schema in metadata —
+    // we have to sample actual data and inspect it to discover the structure.
+    // This is inherently heuristic (we only look at 100 rows) and can be
+    // slow on large partitioned tables or expensive views.
     if (variants.length > 0) {
-      // * remove null values
-      // * remove fields for which we have multiple types
-      //   ( requires folding decimal to integer )
-      const sampleQuery = `
+      const variantArgs = variants.map(v => `'${v}', "${v}"`).join(', ');
+      // Build the analysis query that flattens sampled rows and detects
+      // the type of each leaf path. We only construct from variant columns
+      // (not *) to avoid flattening the entire row on wide tables.
+      // Paths with multiple types across the sample are dropped (HAVING
+      // count(*) <= 1), and nulls are ignored.
+      const makeSampleQuery = (sampleClause: string) => `
         select path, min(type) as type
         from (
           select
@@ -394,7 +405,7 @@ export class SnowflakeConnection
               when typeof(value) = 'DOUBLE' then 'decimal'
             else lower(typeof(value)) end as type
           from
-            (select object_construct(*) o from ${tablePath} limit 100)
+            (${sampleClause})
               ,table(flatten(input => o, recursive => true)) as meta
           group by 1,2
         )
@@ -403,27 +414,79 @@ export class SnowflakeConnection
         having count(*) <=1
         order by path;
       `;
-      const fieldPathRows = await this.executor.batch(sampleQuery);
+      const limitClause =
+        `select object_construct(${variantArgs}) o` +
+        ` from ${tablePath} limit 100`;
+      // Try TABLESAMPLE first — it picks random micro-partitions without
+      // scanning the whole table, which avoids the full-scan problem on
+      // large partitioned tables. TABLESAMPLE only works on base tables,
+      // not views, so if it fails we fall back to a plain LIMIT 100.
+      const tablesampleClause =
+        `select object_construct(${variantArgs}) o` +
+        ` from ${tablePath} TABLESAMPLE BLOCK (1) limit 100`;
+      const fieldPathRows = await this.runSchemaSample(
+        makeSampleQuery(tablesampleClause),
+        makeSampleQuery(limitClause)
+      );
 
-      // take the schema in list form an convert it into a tree.
-
-      const rootObject = new SnowObject('__root__', this.dialect);
-
-      for (const f of fieldPathRows) {
-        const pathString = f['PATH']?.valueOf().toString();
-        const fieldType = f['TYPE']?.valueOf().toString();
-        if (pathString === undefined || fieldType === undefined) continue;
-        const pathParser = new PathParser(pathString);
-        const path = pathParser.pathChain();
-        if ('name' in path && notVariant.get(path.name)) {
-          // Name will already be in the structdef
-          continue;
+      if (fieldPathRows === undefined) {
+        // Both attempts failed or timed out — treat variants as opaque.
+        for (const name of variants) {
+          structDef.fields.push({type: 'sql native', name});
         }
-        // Walk the path and mark the type at the end
-        rootObject.walk(path, fieldType);
+      } else {
+        // Take the schema in list form and convert it into a tree.
+        const rootObject = new SnowObject('__root__', this.dialect);
+        for (const f of fieldPathRows) {
+          const pathString = f['PATH']?.valueOf().toString();
+          const fieldType = f['TYPE']?.valueOf().toString();
+          if (pathString === undefined || fieldType === undefined) continue;
+          const pathParser = new PathParser(pathString);
+          const path = pathParser.pathChain();
+          if ('name' in path && notVariant.get(path.name)) {
+            continue;
+          }
+          rootObject.walk(path, fieldType);
+        }
+        structDef.fields.push(...rootObject.fields);
       }
-      structDef.fields.push(...rootObject.fields);
     }
+  }
+
+  /**
+   * Try to run a schema sampling query, with fallback.
+   * First tries the primary query (e.g. using TABLESAMPLE for speed).
+   * If that fails or returns no rows, tries the fallback query (plain
+   * LIMIT). If both fail or time out, returns undefined so the caller
+   * can degrade to sql native types.
+   *
+   * Uses tryBatch for the primary query so that a failure (e.g.
+   * TABLESAMPLE on a view) doesn't destroy the pool connection —
+   * session-scoped temp views would be lost otherwise.
+   */
+  private async runSchemaSample(
+    primaryQuery: string,
+    fallbackQuery: string
+  ): Promise<QueryRecord[] | undefined> {
+    // tryBatch catches errors inside the pool callback, preserving the
+    // connection and any session state (temp views, session params).
+    const rows = await this.executor.tryBatch(
+      primaryQuery,
+      {},
+      this.schemaSampleTimeoutMs
+    );
+    if (rows && rows.length > 0) {
+      return rows;
+    }
+    // Primary failed or returned no rows — try the fallback.
+    // Also use tryBatch so a timeout doesn't destroy the connection.
+    return (
+      (await this.executor.tryBatch(
+        fallbackQuery,
+        {},
+        this.schemaSampleTimeoutMs
+      )) ?? undefined
+    );
   }
 
   async fetchTableSchema(
