@@ -1,12 +1,10 @@
 /*
- * Copyright (c) Meta Platforms, Inc. and affiliates.
- *
- * This source code is licensed under the MIT license found in the
- *  LICENSE file in the root directory of this source tree.
+ * Copyright Contributors to the Malloy project
+ * SPDX-License-Identifier: MIT
  */
 
 import type {
-  Annotation,
+  AnnotationsDef,
   AtomicFieldDef,
   FieldDef,
   JoinFieldDef,
@@ -14,7 +12,13 @@ import type {
   MatrixOperation,
   SourceDef,
 } from '../../../model/malloy_types';
-import {isAtomic, isJoined, isSourceDef, TD} from '../../../model/malloy_types';
+import {
+  activeName,
+  isAtomic,
+  isJoined,
+  isSourceDef,
+  TD,
+} from '../../../model/malloy_types';
 
 import type {HasParameter} from '../parameters/has-parameter';
 import {Source} from './source';
@@ -27,7 +31,7 @@ import type {MalloyElement} from '../types/malloy-element';
  */
 export class CompositeSource extends Source {
   elementType = 'compositeSource';
-  currentAnnotation?: Annotation;
+  currentAnnotation?: AnnotationsDef;
 
   constructor(readonly sources: Source[]) {
     super({sources});
@@ -82,7 +86,7 @@ function composeSources(
       );
     }
     for (const field of sourceDef.fields) {
-      const fieldName = field.as ?? field.name;
+      const fieldName = activeName(field);
       if (field.accessModifier === 'private') {
         continue;
       }
@@ -145,16 +149,14 @@ function composeSources(
           if (field.accessModifier === 'internal') {
             existing.accessModifier = 'internal';
           }
-          if (
-            !(
-              TD.eq(field, existing) ||
-              // Handle the case where both fields don't have a raw type...
-              // TODO ask MToy about this
-              (field.type === 'sql native' &&
-                existing.type === 'sql native' &&
-                field.rawType === existing.rawType)
-            )
-          ) {
+          if (!(
+            TD.eq(field, existing) ||
+            // Handle the case where both fields don't have a raw type...
+            // TODO ask MToy about this
+            (field.type === 'sql native' &&
+              existing.type === 'sql native' &&
+              field.rawType === existing.rawType)
+          )) {
             source.logTo.logError(
               'composite-field-type-mismatch',
               `field \`${

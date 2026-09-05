@@ -187,7 +187,7 @@ describe('given: declarations', () => {
         # label="Tenant"
         TENANT :: string
     `);
-    expect(givens[0].note?.notes?.map(n => n.text)).toEqual([
+    expect(givens[0].ownAnnotation?.notes?.map(n => n.text)).toEqual([
       '# label="Tenant"\n',
     ]);
   });
@@ -202,7 +202,7 @@ describe('given: declarations', () => {
     // Block notes from the `given:` statement are pushed onto each child
     // declaration's note via extendNote, the same way DefineSourceList works.
     for (const g of givens) {
-      const blockNotes = g.note?.blockNotes?.map(n => n.text) ?? [];
+      const blockNotes = g.ownAnnotation?.blockNotes?.map(n => n.text) ?? [];
       expect(blockNotes).toContain('# block_tag\n');
     }
   });
@@ -286,13 +286,13 @@ describe('$NAME references in expressions', () => {
 describe('given: parse-time errors', () => {
   test('missing type is a parse error', () => {
     expect('given: TENANT').toLog(
-      errorMessage(/extraneous|missing|mismatched|no viable/i)
+      errorMessage(/extraneous|missing|mismatched|no viable|unexpected/i)
     );
   });
 
   test('missing name is a parse error', () => {
     expect('given: :: string').toLog(
-      errorMessage(/extraneous|missing|mismatched/i)
+      errorMessage(/extraneous|missing|mismatched|unexpected/i)
     );
   });
 
@@ -312,7 +312,7 @@ describe('given: parse-time errors', () => {
     // as a given type. The parser reports a syntax error rather than
     // accepting and later rejecting.
     expect('given: J :: json').toLog(
-      errorMessage(/extraneous|missing|mismatched|no viable/i)
+      errorMessage(/extraneous|missing|mismatched|no viable|unexpected/i)
     );
   });
 });
@@ -870,8 +870,7 @@ describe('given: per-Query givenUsage summary', () => {
     // minimal set for that branch. Cases where composite resolution doesn't
     // run (e.g. composites as join targets) are not exercised here — the
     // defensive `composite` arm of `givenUsageOfSource` would conservatively
-    // union over branches if it were ever reached. See "Composite sources
-    // — partial coverage" in ~/ctx/mp/implementation.md.
+    // union over branches if it were ever reached.
     test('non-discriminating query picks the first branch', () => {
       const md = translateOK(`
         ##! experimental.composite_sources
@@ -1791,6 +1790,28 @@ describe('inline givens', () => {
         inline CAN_READ :: boolean is 'read' in $CAPS
         inline CAN_MUTATE :: boolean is 'write' in $CAPS or $ROLE = 'admin'
     `).toTranslate();
+  });
+
+  test('inline referencing a regular given with a reducible default translates cleanly', () => {
+    expect(givensModel`
+      given:
+        REV_REC_METHOD :: string[] is ['__NO_METHOD__']
+        inline NO_METHOD_RESTRICTIONS :: boolean is '__NO_METHOD__' in $REV_REC_METHOD
+    `).toTranslate();
+  });
+
+  test('inline reaching a non-reducible default through a reference is a translate-time error', () => {
+    // `N`'s default `1 + 1` isn't inline-reducible; an inline gate that
+    // can fall back to it is rejected, naming the reference.
+    expect(givensModel`
+      given:
+        N :: number is 1 + 1
+        inline BIG :: boolean is $N > 0
+    `).toLog(
+      errorMessage(
+        /inline given `BIG` references `N`, whose default uses operator\(s\) not allowed/
+      )
+    );
   });
 
   test('inline given filtered out of Model.givens introspection', () => {

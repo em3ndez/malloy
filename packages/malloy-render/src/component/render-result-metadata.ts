@@ -1,25 +1,6 @@
 /*
- * Copyright 2023 Google LLC
- * Copyright (c) Meta Platforms, Inc. and affiliates.
- *
- * Permission is hereby granted, free of charge, to any person obtaining
- * a copy of this software and associated documentation files
- * (the "Software"), to deal in the Software without restriction,
- * including without limitation the rights to use, copy, modify, merge,
- * publish, distribute, sublicense, and/or sell copies of the Software,
- * and to permit persons to whom the Software is furnished to do so,
- * subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be
- * included in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
- * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
- * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
- * IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
- * CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
- * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
- * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ * Copyright Contributors to the Malloy project
+ * SPDX-License-Identifier: MIT
  */
 
 import type {Tag} from '@malloydata/malloy-tag';
@@ -34,12 +15,21 @@ import {
 } from './tag-utils';
 import type {RootField} from '@/data_tree';
 import type {RenderFieldMetadata} from '@/render-field-metadata';
+import type {MalloyExplicitTheme} from '@/api/types';
 
 export type GetResultMetadataOptions = {
   renderFieldMetadata: RenderFieldMetadata;
   getVegaConfigOverride?: VegaConfigHandler;
   parentSize: {width: number; height: number};
   useVegaInterpreter?: boolean;
+  /**
+   * Operator-level theme passed by the embedding app (e.g. Publisher).
+   * The `# shape_map` and `# segment_map` plugins build their own
+   * colour scales and forward this to {@link getColorScale} so the
+   * gradient picks up the operator's `mapColor` instead of the
+   * hardcoded blue ramp.
+   */
+  explicitTheme?: MalloyExplicitTheme;
 };
 
 export interface FieldVegaInfo {

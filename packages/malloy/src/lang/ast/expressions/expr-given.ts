@@ -25,7 +25,7 @@ export class GivenReference extends ExpressionDef {
     super();
   }
 
-  getExpression(_fs: FieldSpace): ExprValue {
+  protected computeExpression(_fs: FieldSpace): ExprValue {
     const doc = this.document();
     const entry = doc?.getEntry(this.name)?.entry;
     if (entry === undefined) {
@@ -56,7 +56,7 @@ export class GivenReference extends ExpressionDef {
       location: this.location,
       definition: {
         type: typeDefToString(given.type),
-        annotation: given.annotation,
+        annotations: given.annotations,
         location: given.location,
         defaultText: given.defaultText,
       },

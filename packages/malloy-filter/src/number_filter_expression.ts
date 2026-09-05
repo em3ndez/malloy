@@ -1,8 +1,6 @@
 /*
- * Copyright (c) Meta Platforms, Inc. and affiliates.
- *
- * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree.
+ * Copyright Contributors to the Malloy project
+ * SPDX-License-Identifier: MIT
  */
 
 import type {FilterParserResponse, NumberFilter} from './filter_interface';
@@ -50,6 +48,9 @@ export const NumberFilterExpression = {
       }
       case 'null': {
         return nc.not ? 'not null' : 'null';
+      }
+      case 'none': {
+        return nc.not ? 'not none' : 'none';
       }
       case 'and':
       case 'or':

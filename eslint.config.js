@@ -14,6 +14,7 @@ module.exports = defineConfig([
       'packages/malloy-malloy-sql/src/grammar/**',
       'packages/malloy-tag/src/peggy/dist/**',
       'packages/malloy-syntax-highlight/**/*.monarch.ts',
+      'packages/malloy-syntax-highlight/**/tokenizations/*.ts',
       'packages/malloy-interfaces/docs/**',
       'packages/malloy-query-builder/docs/**',
       'packages/malloy-tag/src/lib/**',
@@ -95,6 +96,17 @@ module.exports = defineConfig([
   },
   {
     files: ['scripts/**', 'packages/malloy-render/src/stories/**'],
+    rules: {
+      'no-console': 'off',
+    },
+  },
+  {
+    // The consumer-canary's node ESM script (esbuild bundle check).
+    files: ['test/consumer-canary/*.mjs'],
+    languageOptions: {
+      sourceType: 'module',
+      globals: globals.node,
+    },
     rules: {
       'no-console': 'off',
     },

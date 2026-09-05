@@ -1,8 +1,6 @@
 /*
- * Copyright (c) Meta Platforms, Inc. and affiliates.
- *
- * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree.
+ * Copyright Contributors to the Malloy project
+ * SPDX-License-Identifier: MIT
  */
 
 import type {ArrayLiteralNode, ArrayTypeDef, Expr} from '../../../model';
@@ -20,7 +18,7 @@ export class ArrayLiteral extends ExpressionDef {
     this.has({elements});
   }
 
-  getExpression(fs: FieldSpace): ExprValue {
+  protected computeExpression(fs: FieldSpace): ExprValue {
     const values: Expr[] = [];
     const fromValues: ExprValue[] = [];
     let firstValue: ExprValue | undefined = undefined;

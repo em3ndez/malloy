@@ -1,8 +1,6 @@
 /*
- * Copyright (c) Meta Platforms, Inc. and affiliates.
- *
- * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree.
+ * Copyright Contributors to the Malloy project
+ * SPDX-License-Identifier: MIT
  */
 
 import type {ExprValue} from '../types/expr-value';
@@ -14,7 +12,7 @@ export class ExprFilterExpression extends ExpressionDef {
     super();
   }
 
-  getExpression(): ExprValue {
+  protected computeExpression(): ExprValue {
     return {
       type: 'filter expression',
       value: {node: 'filterLiteral', filterSrc: this.filterText},

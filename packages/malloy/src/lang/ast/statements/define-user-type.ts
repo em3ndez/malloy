@@ -6,9 +6,8 @@
 import type {DocStatement, Document} from '../types/malloy-element';
 import {MalloyElement, DocStatementList} from '../types/malloy-element';
 import type {Noteable} from '../types/noteable';
-import {extendNoteMethod} from '../types/noteable';
 import type {
-  Annotation,
+  AnnotationsDef,
   UserTypeDef,
   UserTypeFieldDef,
 } from '../../../model/malloy_types';
@@ -67,8 +66,7 @@ export class DefineUserType
     this.has({shapeDef});
   }
   readonly isNoteableObj = true;
-  extendNote = extendNoteMethod;
-  note?: Annotation;
+  ownAnnotation?: AnnotationsDef;
 
   execute(doc: Document): void {
     if (doc.modelEntry(this.name)) {
@@ -88,8 +86,8 @@ export class DefineUserType
       fields,
       location: this.location,
     };
-    if (this.note) {
-      entry.annotation = this.note;
+    if (this.ownAnnotation) {
+      entry.annotations = {...this.ownAnnotation};
     }
     doc.setEntry(this.name, {entry, exported: this.exported});
   }

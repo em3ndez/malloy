@@ -1,8 +1,6 @@
 /*
- * Copyright (c) Meta Platforms, Inc. and affiliates.
- *
- * This source code is licensed under the MIT license found in the
- *  LICENSE file in the root directory of this source tree.
+ * Copyright Contributors to the Malloy project
+ * SPDX-License-Identifier: MIT
  */
 
 import {MalloyElement} from '../types/malloy-element';
@@ -11,9 +9,8 @@ import type {
   FieldReference,
   WildcardFieldReference,
 } from '../query-items/field-references';
-import type {Annotation} from '../../../model';
+import type {AnnotationsDef} from '../../../model';
 import type {Noteable} from '../types/noteable';
-import {extendNoteMethod} from '../types/noteable';
 
 // type RenameSpec = {
 //   as: string;
@@ -28,8 +25,7 @@ export abstract class IncludeItem extends MalloyElement {
 export class IncludeAccessItem extends IncludeItem implements Noteable {
   elementType = 'include-access-item';
   readonly isNoteableObj = true;
-  extendNote = extendNoteMethod;
-  note?: Annotation;
+  ownAnnotation?: AnnotationsDef;
   constructor(
     readonly kind: 'private' | 'public' | 'internal' | undefined,
     readonly fields: IncludeListItem[]
@@ -62,8 +58,7 @@ export class IncludeExceptItem extends IncludeItem {
 export class IncludeListItem extends MalloyElement implements Noteable {
   elementType = 'include-list-item';
   readonly isNoteableObj = true;
-  extendNote = extendNoteMethod;
-  note?: Annotation;
+  ownAnnotation?: AnnotationsDef;
 
   constructor(
     readonly name: AccessModifierFieldReference | WildcardFieldReference,

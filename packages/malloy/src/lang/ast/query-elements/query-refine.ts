@@ -1,24 +1,6 @@
 /*
- * Copyright 2023 Google LLC
- *
- * Permission is hereby granted, free of charge, to any person obtaining
- * a copy of this software and associated documentation files
- * (the "Software"), to deal in the Software without restriction,
- * including without limitation the rights to use, copy, modify, merge,
- * publish, distribute, sublicense, and/or sell copies of the Software,
- * and to permit persons to whom the Software is furnished to do so,
- * subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be
- * included in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
- * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
- * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
- * IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
- * CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
- * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
- * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ * Copyright Contributors to the Malloy project
+ * SPDX-License-Identifier: MIT
  */
 
 import {StaticSourceSpace} from '../field-space/static-space';
@@ -27,6 +9,7 @@ import type {QueryElement} from '../types/query-element';
 import type {View} from '../view-elements/view';
 import {QueryBase} from './query-base';
 import {computeQueryGivenUsage} from '../../composite-source-utils';
+import {detectAndRemovePartialStages} from '../query-utils';
 
 /**
  * A query operation that consists of an exisitng query with refinements.
@@ -43,8 +26,10 @@ export class QueryRefine extends QueryBase implements QueryElement {
     super({base, refinement});
   }
 
-  queryComp(isRefOk: boolean): QueryComp {
-    const q = this.base.queryComp(isRefOk);
+  queryComp(isRefOk: boolean, isPartialOk: boolean): QueryComp {
+    // The refinement is what decides the query class, so the base is the one
+    // place a partial segment is expected rather than an error.
+    const q = this.base.queryComp(isRefOk, true);
     const inputFS = new StaticSourceSpace(q.inputStruct, 'public');
     const pipeline = this.refinement.refine(
       inputFS,
@@ -66,12 +51,16 @@ export class QueryRefine extends QueryBase implements QueryElement {
       pipeline
     );
 
+    const finalPipeline = isPartialOk
+      ? pipelineWithExpandedFieldUsage
+      : detectAndRemovePartialStages(pipelineWithExpandedFieldUsage, this);
+
     return {
       query: {
         ...query,
         compositeResolvedSourceDef,
-        pipeline: pipelineWithExpandedFieldUsage,
-        givenUsage: computeQueryGivenUsage(pipelineWithExpandedFieldUsage),
+        pipeline: finalPipeline,
+        givenUsage: computeQueryGivenUsage(finalPipeline),
       },
       // TODO bleh
       outputStruct: pipeline[pipeline.length - 1].outputStruct,

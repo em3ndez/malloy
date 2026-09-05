@@ -1,24 +1,6 @@
 /*
- * Copyright 2023 Google LLC
- *
- * Permission is hereby granted, free of charge, to any person obtaining
- * a copy of this software and associated documentation files
- * (the "Software"), to deal in the Software without restriction,
- * including without limitation the rights to use, copy, modify, merge,
- * publish, distribute, sublicense, and/or sell copies of the Software,
- * and to permit persons to whom the Software is furnished to do so,
- * subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be
- * included in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
- * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
- * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
- * IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
- * CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
- * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
- * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ * Copyright Contributors to the Malloy project
+ * SPDX-License-Identifier: MIT
  */
 
 import type {InGivenExpr} from '../../../model/malloy_types';
@@ -60,7 +42,7 @@ export class ExprCompare extends BinaryBoolean<CompareMalloyOperator> {
     this.legalChildTypes = compareTypes[op];
   }
 
-  getExpression(fs: FieldSpace): ExprValue {
+  protected computeExpression(fs: FieldSpace): ExprValue {
     return this.right.apply(fs, this.op, this.left);
   }
 }
@@ -81,7 +63,7 @@ export class ExprEquality extends ExprCompare {
     super(left, op, right);
   }
 
-  getExpression(fs: FieldSpace): ExprValue {
+  protected computeExpression(fs: FieldSpace): ExprValue {
     return this.right.apply(fs, this.op, this.left, true);
   }
 
@@ -105,7 +87,7 @@ export class ExprLegacyIn extends ExpressionDef {
     this.has({expr, choices});
   }
 
-  getExpression(fs: FieldSpace): ExprValue {
+  protected computeExpression(fs: FieldSpace): ExprValue {
     const lookFor = this.expr.getExpression(fs);
     const oneOf = this.choices.map(e => e.getExpression(fs));
     return computedExprValue({
@@ -137,7 +119,7 @@ export class ExprInGiven extends ExpressionDef {
     this.has({expr, givenRef});
   }
 
-  getExpression(fs: FieldSpace): ExprValue {
+  protected computeExpression(fs: FieldSpace): ExprValue {
     const lookFor = this.expr.getExpression(fs);
     const givenVal = this.givenRef.getExpression(fs);
 

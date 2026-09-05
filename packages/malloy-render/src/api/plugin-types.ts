@@ -1,8 +1,6 @@
 /*
- * Copyright (c) Meta Platforms, Inc. and affiliates.
- *
- * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree.
+ * Copyright Contributors to the Malloy project
+ * SPDX-License-Identifier: MIT
  */
 
 import type {JSXElement} from 'solid-js';
@@ -56,8 +54,7 @@ export interface DOMRenderPluginInstance<
 }
 
 export type RenderPluginInstance<TMetadata = unknown> =
-  | SolidJSRenderPluginInstance<TMetadata>
-  | DOMRenderPluginInstance<TMetadata>;
+  SolidJSRenderPluginInstance<TMetadata> | DOMRenderPluginInstance<TMetadata>;
 
 export interface CoreVizPluginMethods {
   getSchema(): JSONSchemaObject;

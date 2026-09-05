@@ -1,8 +1,6 @@
 /*
- * Copyright (c) Meta Platforms, Inc. and affiliates.
- *
- * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree.
+ * Copyright Contributors to the Malloy project
+ * SPDX-License-Identifier: MIT
  */
 
 import type {
@@ -17,12 +15,13 @@ import * as lite from 'vega-lite';
 import * as vega from 'vega';
 import usAtlas from 'us-atlas/states-10m.json';
 import {mergeVegaConfigs} from '@/component/vega/merge-vega-configs';
-import {getColorScale} from '@/html/utils';
+import {getColorScale, mapCanvasBackground} from '@/html/utils';
 import type {
   GetResultMetadataOptions,
   RenderMetadata,
 } from '@/component/render-result-metadata';
 import type {RenderLogCollector} from '@/component/render-log-collector';
+import type {MalloyExplicitTheme} from '@/api/types';
 
 function getDataType(field: Field): 'ordinal' | 'quantitative' | 'nominal' {
   if (field.isString()) return 'nominal';
@@ -106,6 +105,7 @@ export const SegmentMapPluginFactory: RenderPluginFactory<DOMRenderPluginInstanc
     create: (field: Field): DOMRenderPluginInstance => {
       let vegaConfigOverride: Record<string, unknown> = {};
       let logCollector: RenderLogCollector | undefined;
+      let explicitTheme: MalloyExplicitTheme | undefined;
 
       return {
         name: 'segment_map',
@@ -120,6 +120,7 @@ export const SegmentMapPluginFactory: RenderPluginFactory<DOMRenderPluginInstanc
           vegaConfigOverride =
             options.getVegaConfigOverride?.('segment_map') ?? {};
           logCollector = options.renderFieldMetadata.logCollector;
+          explicitTheme = options.explicitTheme;
         },
 
         renderToDOM: (container: HTMLElement, props: RenderProps): void => {
@@ -145,7 +146,7 @@ export const SegmentMapPluginFactory: RenderPluginFactory<DOMRenderPluginInstanc
                   field: colorField.name,
                   type: colorType,
                   axis: {title: colorField.name},
-                  scale: getColorScale(colorType, false),
+                  scale: getColorScale(colorType, false, false, explicitTheme),
                 }
               : undefined;
 
@@ -178,7 +179,12 @@ export const SegmentMapPluginFactory: RenderPluginFactory<DOMRenderPluginInstanc
                 },
               },
             ],
-            background: 'transparent',
+            // Map canvas background from the embedder theme; an unset or
+            // empty value falls back to transparent so the map blends with
+            // the host chrome. `vegaConfigOverride` cannot change this: it
+            // merges only into spec.config, which a top-level spec.background
+            // shadows in Vega-Lite.
+            background: mapCanvasBackground(explicitTheme),
             config: SEGMENT_MAP_VEGA_CONFIG,
           };
 

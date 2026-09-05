@@ -94,7 +94,9 @@ The AST is a tree of `MalloyElement` objects that represents the semantic struct
 Two methods anchor how AST nodes plug into the translator's drivers. They're distinct from the `visitX`/`getX` parse-tree-builder conventions above and from the `structShapeFieldDef()`/`getX(parameterSpace)` IR-shaped accessor conventions.
 
 - **`DocStatement.execute(doc: Document): void`** — the interface declared at `malloy-element.ts:377`. `Document.compile()` (in the same file, ~`:588`) walks its `DocStatementList` via `executeList(doc)`, which iterates `this.elements` and for each non-list element calls `el.needs(doc)` first and `el.execute(doc)` only if `needs` returned undefined. Implementers: `ImportStatement`, `DefineSource`, `DefineGivens`, `ModelAnnotation`, `ExperimentalExperiment`, and others under `ast/statements/`.
-- **`ExpressionDef.getExpression(fs: FieldSpace): ExprValue`** — the abstract method at `expression-def.ts:82`. `ExpressionDef` is the base class for all expression-shaped AST nodes; operators recursively call `getExpression` on their operand `ExpressionDef`s to obtain the IR value + type for that subtree. Representative call sites: `expressions/case.ts`, `expressions/expr-cast.ts`, `expressions/pick-when.ts`, `expressions/apply.ts`. This is the integration point for expression evaluation, separate from the AST-element-wide naming conventions.
+- **`ExpressionDef.getExpression(fs: FieldSpace): ExprValue`** — the concrete, sealed method at `expression-def.ts:89`. `ExpressionDef` is the base class for all expression-shaped AST nodes; operators recursively call `getExpression` on their operand `ExpressionDef`s to obtain the IR value + type for that subtree. Representative call sites: `expressions/case.ts`, `expressions/expr-cast.ts`, `expressions/pick-when.ts`, `expressions/apply.ts`. This is the integration point for expression evaluation, separate from the AST-element-wide naming conventions.
+
+  **Nodes do not override `getExpression`.** They implement the abstract `computeExpression(fs)` instead; `getExpression` is the one funnel every evaluation passes through, and it memoizes the result against the field space and its generation. Evaluating a node twice therefore returns the *same object*, so **an `ExprValue` must be treated as immutable by whoever receives it** — deriving a new value from one means building a new one. Overriding `getExpression` bypasses the memo, which for `+`/`-` chains is the difference between linear and exponential compile time.
 
 ### 3. Translator (`parse-malloy.ts`)
 
@@ -184,13 +186,72 @@ The two `ExprFunc` rejections cover the two raw-SQL escape hatches in the langua
 
 The rejections fire at integration time (`execute` / `getSourceDef` / `getExpression`) — not during AST build — so a single compile collects all violations rather than stopping at the first. `ASTStep`'s `hasErrors()` short-circuit doesn't trip because none of these sites have logged yet.
 
-The `##!` case has a structural twist: `MalloyToAST.updateCompilerFlags` is where compiler-flag lines would normally be pushed onto `compilerFlagSrc` during the visitor walk. In restricted mode, that push is suppressed so the flag never takes effect; the *user-visible diagnostic* is logged later from `ModelAnnotation.execute()`. The trusted-model seeding path in TranslateStep (which feeds `compilerFlagSrc` from `extendingModel.annotation`) is untouched — flags declared by the producer carry through.
+The `##!` case has a structural twist: `MalloyToAST.updateCompilerFlags` is where compiler-flag lines would normally be pushed onto `compilerFlagSrc` during the visitor walk. In restricted mode, that push is suppressed so the flag never takes effect; the *user-visible diagnostic* is logged later from `ModelAnnotation.execute()`. The trusted-model seeding path in TranslateStep (which feeds `compilerFlagSrc` from `extendingModel.annotations`) is untouched — flags declared by the producer carry through.
 
 Independent of the per-site rejections, the four needs-bearing zones (`importZone`, `schemaZone`, `sqlQueryZone`, `connectionDialectZone`) are locked at the top of `MalloyTranslator.translate()` via `lockZonesIfRestricted()`. After the lock, `Zone.reference()` / `.define()` / `.updateFrom()` are silent no-ops. `ImportsAndTablesStep` also early-returns when restricted, so no child translators are created for `import` statements that are about to be rejected. The zone lock is the structural backstop: even if a future construct slipped through the AST-level rejection, the translator could not reach the host's `URLReader` or connections.
 
 The `restrictedMode` flag flows: `ParseOptions.restrictedMode` → `MalloyTranslator` constructor → `that.root.restrictedMode` (read by AST nodes via `MalloyElement.isRestricted()`) and `MalloyToAST`'s `restrictedMode` constructor param (passed in by `ASTStep`).
 
 API-level details: [`../api/CONTEXT.md`](../api/CONTEXT.md) and the JSDoc on `ModelMaterializer.loadRestrictedQuery`.
+
+## Access modifiers
+
+`private`/`internal` (behind `##! experimental.access_modifiers`) are rules
+about which **names** a model may write: `internal` may not be named in a
+query but may be named in definitions in extensions of the source, `private`
+in neither. No modifier means public — `accessModifier` only ever holds
+`'private' | 'internal'`.
+
+The labels are written onto the field defs at the end of the scope which
+declares them — one `include {} extend {}` construct — so within that scope
+there is no modifier on a field yet to deny. That is why a `private` field can
+be named in the scope which declares it and not in a later one.
+
+Reading a namespace is factored into two primitives in
+`ast/field-space/static-space.ts`, and everything that reads one goes through
+them, so a name and a `*` cannot drift apart:
+
+- `resolveNamespace(from, path, level, member)` walks a join path. Each hop is
+  a `readEntry`, and the level narrows through each join with
+  `lessPermissiveAccessLevel()`. It answers "what namespace is at the end of
+  this path, and what level does a reader arrive there with?"
+- `readEntry(space, name, level)` reads one name: records the reference, and
+  refuses the entry if the level may not see it (`field-not-accessible`).
+  `accessibleEntries(space, level)` applies that same rule to every entry.
+
+They are functions over the `FieldSpace` interface, not members of it — the
+interface has many implementors and none of them should inherit a security
+obligation.
+
+**By name** — `StaticSpace.lookup()` is `resolveNamespace` over the path
+before the name, then `readEntry` of the name. It asks "what may I, standing
+here, refer to?", so the starting level is the reading space's
+`accessProtectionLevel()`.
+
+**By `*`** — `QueryOperationSpace.wildcardExpansion()` is `resolveNamespace`
+over the path before the star, then `accessibleEntries` of what it reached. It
+asks "what will a user of the finished source see?", so the starting level is
+`public`: a `*` expands **public fields only**, and the path before it may only
+walk fields which are public too. Neither half depends on what the surrounding
+code is allowed to name, so `select: c.*` fails in a place where `select: c.ai`
+compiles. A disallowed field is dropped silently, since naming it in an error
+would disclose the name the restriction exists to hide; a disallowed path is an
+error, since the user wrote that name themselves.
+
+Inside the scope which declares restrictions they are not on the fields yet
+(see above), so a `*` there sees them all.
+
+`entries()` is the raw namespace map and never filters.
+
+`::Shape` is a second producer of modifiers: applying a type marks every column
+the shape does not list `internal` (`ast/source-elements/typed-source.ts`), so
+what a `*` does with modifiers is also what shape hiding does.
+
+`select:` and `index:` share the expansion and differ after it: each applies
+its own type filter (`select:` atomic fields, `index:` basic ones), its own
+name-conflict check, and its own bookkeeping. A `*` which matches nothing is
+`wildcard-matched-no-fields`, reported at the `*` — it names only the path the
+user wrote.
 
 ## File Organization
 

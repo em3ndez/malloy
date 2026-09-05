@@ -1,7 +1,12 @@
 import type {Config} from 'jest';
 
-process.env.TZ = 'America/Los_Angeles';
+process.env['TZ'] = 'America/Los_Angeles';
 
+// ESM-only deps that ship plain static import/export: jest's CJS runtime can't
+// load them as-is, so they must be transformed (not ignored). See the Class-1
+// ESM note in docs/dependency-management/CONTEXT.md. (uuid and @noble/hashes were here until
+// they were pinned to CJS-consumable majors — an ESM-only runtime dep leaks
+// downstream like a native binary, so the core stays CJS.)
 const transformIgnoreModules = ['@motherduck/wasm-client'].join('|');
 
 const defaultConfig: Config = {
@@ -9,10 +14,27 @@ const defaultConfig: Config = {
   setupFilesAfterEnv: ['<rootDir>/test/jest.setup.ts', 'jest-expect-message'],
   testMatch: ['<rootDir>**/*.spec.(ts|js)?(x)'],
   testPathIgnorePatterns: ['/node_modules/', '/dist/', '/out/'],
+  // node_modules is left untransformed except the Class-1 ESM-only deps above,
+  // which must be run through babel to become loadable under jest's CJS runtime.
+  transformIgnorePatterns: [`node_modules/(?!(${transformIgnoreModules})/)`],
   transform: {
     '^.+\\.(ts|tsx)$': ['ts-jest', {tsconfig: '<rootDir>/test/tsconfig.json'}],
+    '^.+\\.(js|jsx)$': [
+      'babel-jest',
+      {
+        'presets': ['@babel/preset-env'],
+        'plugins': [['@babel/transform-runtime']],
+      },
+    ],
   },
 };
+
+// What the `connector-unit` project claims, excluded from the backend
+// projects that would otherwise also match it.
+const connectorUnitIgnored = [
+  ...(defaultConfig.testPathIgnorePatterns ?? []),
+  '\\.unit\\.spec\\.ts$',
+];
 
 const config: Config = {
   moduleFileExtensions: ['js', 'jsx', 'ts', 'tsx'],
@@ -47,8 +69,20 @@ const config: Config = {
         '<rootDir>/packages/malloy/',
         '<rootDir>/packages/malloy-query-builder/',
         '<rootDir>/test/src/core/',
-        '<rootDir>/test/src/render/',
       ],
+    },
+    {
+      // The render tests need a DOM (jest.setup.dom.ts). They are kept in
+      // their own project so the fake `document` global is not in scope for
+      // the duckdb-wasm tests in malloy-core — web-worker's browser detection
+      // keys off `typeof document` and breaks under Node when it is present.
+      ...defaultConfig,
+      displayName: 'malloy-render-test',
+      setupFilesAfterEnv: [
+        '<rootDir>/test/jest.setup.dom.ts',
+        ...(defaultConfig.setupFilesAfterEnv ?? []),
+      ],
+      roots: ['<rootDir>/test/src/render/'],
     },
     {
       ...defaultConfig,
@@ -76,6 +110,21 @@ const config: Config = {
       },
     },
     {
+      // Connector tests that need no warehouse — `*.unit.spec.ts` under the
+      // db-* packages. They live in the same directories as the tests that do
+      // need one, so without this project they would run only in that
+      // backend's credentialed CI job: a hermetic test of BigQuery config
+      // parsing would sit out every PR that didn't touch BigQuery, which is
+      // exactly the PR that breaks it. The db-* projects below exclude the
+      // same pattern, so each file still runs in exactly one project — a file
+      // matched by two would appear twice in `jest --listTests` and fail
+      // scripts/ci-test-sanity-check.sh.
+      ...defaultConfig,
+      displayName: 'connector-unit',
+      roots: ['<rootDir>/packages/'],
+      testMatch: ['<rootDir>/packages/malloy-db-*/**/*.unit.spec.ts'],
+    },
+    {
       ...defaultConfig,
       displayName: 'db-all',
       roots: ['<rootDir>/test/src/databases/all/'],
@@ -83,6 +132,7 @@ const config: Config = {
     {
       ...defaultConfig,
       displayName: 'db-bigquery',
+      testPathIgnorePatterns: connectorUnitIgnored,
       roots: [
         '<rootDir>/packages/malloy-db-bigquery/',
         '<rootDir>/test/src/databases/bigquery/',
@@ -100,6 +150,14 @@ const config: Config = {
       ...defaultConfig,
       displayName: 'db-duckdb-core',
       roots: ['<rootDir>/test/src/databases/duckdb/'],
+    },
+    {
+      // The teaching builder in scripts/simple_builder is cited as
+      // documentation, so its spec runs in CI to keep it from drifting. It
+      // builds against DuckDB, hence the duckdb job.
+      ...defaultConfig,
+      displayName: 'simple-builder',
+      roots: ['<rootDir>/scripts/simple_builder/'],
     },
     {
       ...defaultConfig,
@@ -120,6 +178,7 @@ const config: Config = {
     {
       ...defaultConfig,
       displayName: 'db-publisher',
+      testPathIgnorePatterns: connectorUnitIgnored,
       roots: ['<rootDir>/packages/malloy-db-publisher/'],
     },
     {
@@ -135,6 +194,7 @@ const config: Config = {
     {
       ...defaultConfig,
       displayName: 'db-databricks',
+      testPathIgnorePatterns: connectorUnitIgnored,
       roots: ['<rootDir>/packages/malloy-db-databricks/'],
     },
   ],

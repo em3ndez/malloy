@@ -1,24 +1,6 @@
 /*
- * Copyright 2023 Google LLC
- *
- * Permission is hereby granted, free of charge, to any person obtaining
- * a copy of this software and associated documentation files
- * (the "Software"), to deal in the Software without restriction,
- * including without limitation the rights to use, copy, modify, merge,
- * publish, distribute, sublicense, and/or sell copies of the Software,
- * and to permit persons to whom the Software is furnished to do so,
- * subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be
- * included in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
- * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
- * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
- * IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
- * CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
- * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
- * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ * Copyright Contributors to the Malloy project
+ * SPDX-License-Identifier: MIT
  */
 
 import {
@@ -31,7 +13,13 @@ import {
   getFieldDef,
 } from './test-translator';
 import './parse-expects';
-import {isSourceDef} from '../../model';
+import {
+  activeName,
+  isSourceDef,
+  QueryModel,
+  sourceNamespaceReference,
+} from '../../model';
+import type {SourceDef, VirtualMap} from '../../model';
 
 describe('source:', () => {
   test('table', () => {
@@ -63,7 +51,7 @@ describe('source:', () => {
     expect(x).toTranslate();
     const a = x.getSourceDef('a');
     if (a) {
-      const aFields = a.fields.map(f => f.as || f.name);
+      const aFields = a.fields.map(f => activeName(f));
       expect(aFields).toContain('astr');
       expect(aFields).not.toContain('one');
     }
@@ -516,14 +504,14 @@ describe('source:', () => {
           const d = t.modelDef.contents['d'];
           expect(isSourceDef(d)).toBe(true);
           if (isSourceDef(d)) {
-            const dC = d.fields.find(f => (f.as ?? f.name) === 'c');
+            const dC = d.fields.find(f => activeName(f) === 'c');
             expect(dC).toBeDefined();
             if (dC === undefined) throw new Error('Expected dC to be defined');
             expect(isSourceDef(dC)).toBe(true);
             expect(isSourceDef(d)).toBe(true);
             if (isSourceDef(dC)) {
-              const dCAi = dC.fields.find(f => (f.as ?? f.name) === 'ai');
-              expect(dCAi?.annotation).toMatchObject({
+              const dCAi = dC.fields.find(f => activeName(f) === 'ai');
+              expect(dCAi?.annotations).toMatchObject({
                 notes: [{text: '# new_note\n'}],
               });
             }
@@ -1149,7 +1137,7 @@ describe('source:', () => {
         const src = m.getSourceDef('query_src');
         expect(src).toBeDefined();
         expect(src?.type).toBe('query_source');
-        if (src && 'sourceID' in src && src.sourceID) {
+        if (src && src.sourceID) {
           const registryValue = modelDef.sourceRegistry[src.sourceID];
           expect(registryValue).toBeDefined();
           expect(registryValue?.entry).toMatchObject({
@@ -1157,7 +1145,7 @@ describe('source:', () => {
             name: 'query_src',
           });
         } else {
-          fail('Expected query_src to have a sourceID');
+          fail('Expected query_src to have an sourceID');
         }
       }
     });
@@ -1185,7 +1173,7 @@ describe('source:', () => {
         expect(extSrc?.type).toBe('query_source');
 
         // Base source should have sourceID
-        if (baseSrc && 'sourceID' in baseSrc && baseSrc.sourceID) {
+        if (baseSrc && baseSrc.sourceID) {
           const baseSourceID = baseSrc.sourceID;
           expect(baseSourceID).toContain('base_src@');
 
@@ -1196,7 +1184,7 @@ describe('source:', () => {
             fail('Expected extended_src to have extends property');
           }
         } else {
-          fail('Expected base_src to have a sourceID');
+          fail('Expected base_src to have an sourceID');
         }
       }
     });
@@ -1242,6 +1230,235 @@ describe('source:', () => {
       }
     });
   });
+
+  describe('referenceID', () => {
+    // referenceID is set only when a source is created as an unmodified
+    // reference to another source, and holds the sourceID of the immediately
+    // referenced source. A source that defines its own shape (table/sql/query,
+    // or a modified/extended source) has no referenceID.
+
+    // Fetch a source def and assert it is present, so a missing source fails
+    // the test loudly instead of letting the assertions below get skipped.
+    function defOf(m: TestTranslator, name: string): SourceDef {
+      const sd = m.getSourceDef(name);
+      expect(sd).toBeDefined();
+      if (!sd || !isSourceDef(sd)) {
+        throw new Error(`expected a source named '${name}'`);
+      }
+      return sd;
+    }
+
+    function sources(src: string) {
+      const m = new TestTranslator(src);
+      expect(m).toTranslate();
+      return m;
+    }
+
+    test('a source that defines its own shape has no referenceID', () => {
+      const base = defOf(
+        sources('source: base is a -> {group_by: astr}'),
+        'base'
+      );
+      expect(base.sourceID).toBeDefined();
+      expect(base.referenceID).toBeUndefined();
+    });
+
+    test('a table source has no referenceID', () => {
+      const tbl = defOf(sources("source: tbl is _db_.table('aTable')"), 'tbl');
+      expect(tbl.sourceID).toBeDefined();
+      expect(tbl.referenceID).toBeUndefined();
+    });
+
+    // A sourceID says "this is the definition named X". Anything that resolves
+    // one through the registry gets the registry's definition, so a def
+    // carrying an id it is not must never exist — it would silently stand in
+    // for a smaller source. Persistence lost a dependency exactly this way: an
+    // inline `extend` kept its base's id and the registry handed back the base,
+    // without whatever the extend had added.
+    test('an unnamed modification does not keep the id of what it modified', () => {
+      const m = sources(`
+        source: base is a extend { dimension: one is 1 }
+        run: base extend { join_one: b on astr = b.astr } -> { group_by: astr }
+      `);
+      const base = defOf(m, 'base');
+      expect(base.sourceID).toBeDefined();
+
+      const structRef = m.translate().modelDef?.queryList[0]?.structRef;
+      if (structRef === undefined || typeof structRef === 'string') {
+        fail('the query does not have an inline extend as its structRef');
+      }
+      const inlineExtend = structRef;
+      // It has the join; the registry's `base` does not. So it cannot claim to
+      // be `base`.
+      expect(inlineExtend.fields.some(f => f.name === 'b')).toBe(true);
+      expect(inlineExtend.sourceID).toBeUndefined();
+    });
+
+    test('an unmodified rename references the source it copies', () => {
+      const m = sources(`
+        source: base is a -> {group_by: astr}
+        source: ref is base
+      `);
+      const base = defOf(m, 'base');
+      const ref = defOf(m, 'ref');
+      // ref defines no new shape: it points at base's identity.
+      expect(ref.referenceID).toBe(base.sourceID);
+      // and it is recognizably a reference, with its own distinct sourceID.
+      expect(ref.referenceID).not.toBeUndefined();
+      expect(ref.sourceID).not.toBe(base.sourceID);
+    });
+
+    test('a reference names the immediate source, not the ultimate origin', () => {
+      const m = sources(`
+        source: base is a -> {group_by: astr}
+        source: ref is base
+        source: ref2 is ref
+      `);
+      // ref2 references ref (what it was written against), not base.
+      expect(defOf(m, 'ref2').referenceID).toBe(defOf(m, 'ref').sourceID);
+      expect(defOf(m, 'ref2').referenceID).not.toBe(defOf(m, 'base').sourceID);
+    });
+
+    test('extending a source clears the reference', () => {
+      const m = sources(`
+        source: base is a -> {group_by: astr}
+        source: ext is base extend {
+          dimension: extra is 'x'
+        }
+      `);
+      expect(defOf(m, 'ext').referenceID).toBeUndefined();
+    });
+
+    test('include clears the reference (it edits the namespace)', () => {
+      const m = sources(`
+        ##! experimental.access_modifiers
+        source: base is a -> {group_by: astr, ai}
+        source: inc is base include { except: ai }
+      `);
+      expect(defOf(m, 'inc').referenceID).toBeUndefined();
+    });
+
+    test('a reference to an extended source points at that extended source', () => {
+      const m = sources(`
+        source: base is a -> {group_by: astr}
+        source: ext is base extend {
+          dimension: extra is 'x'
+        }
+        source: refExt is ext
+      `);
+      expect(defOf(m, 'refExt').referenceID).toBe(defOf(m, 'ext').sourceID);
+    });
+
+    test('a join carries the referenceID of the joined source', () => {
+      const m = sources(`
+        source: base is a -> {group_by: astr, ai}
+        source: host is a extend {
+          join_one: jb is base on ai = jb.ai
+        }
+      `);
+      const base = defOf(m, 'base');
+      const host = defOf(m, 'host');
+      const jb = host.fields.find(f => activeName(f) === 'jb');
+      expect(jb && isSourceDef(jb)).toBeTruthy();
+      if (jb && isSourceDef(jb)) {
+        expect(jb.referenceID).toBe(base.sourceID);
+      }
+    });
+
+    test('sourceNamespaceReference resolves a reference to its namespace name', () => {
+      const m = sources(`
+        source: base is a -> {group_by: astr}
+        source: ref is base
+      `);
+      const modelDef = m.translate().modelDef;
+      expect(modelDef).toBeDefined();
+      // A reference resolves to the namespace entry it points at.
+      const refInfo = sourceNamespaceReference(modelDef!, defOf(m, 'ref'));
+      expect(refInfo?.name).toBe('base');
+      expect(refInfo?.source).toBe(defOf(m, 'base'));
+      // A source that defines its own shape resolves to nothing.
+      expect(
+        sourceNamespaceReference(modelDef!, defOf(m, 'base'))
+      ).toBeUndefined();
+    });
+
+    test('a reference resolves to its namespace name across an import', () => {
+      const docParse = new TestTranslator(`
+        import "child"
+        source: ref is base
+      `);
+      docParse.update({
+        urls: {
+          'internal://test/langtests/child':
+            'source: base is a -> {group_by: astr}',
+        },
+      });
+      expect(docParse).toTranslate();
+      const modelDef = docParse.translate().modelDef;
+      expect(modelDef).toBeDefined();
+      // The reference made in the importing model resolves to the imported name.
+      const refInfo = sourceNamespaceReference(
+        modelDef!,
+        defOf(docParse, 'ref')
+      );
+      expect(refInfo?.name).toBe('base');
+    });
+
+    test('a re-export whose target was not imported is a reference with no namespace entry', () => {
+      // child: `top is base` is an unmodified rename; only `top` is imported.
+      const docParse = new TestTranslator(`
+        import { top } from "child"
+        source: ref is top
+      `);
+      docParse.update({
+        urls: {
+          'internal://test/langtests/child': `
+            source: base is a -> {group_by: astr}
+            source: top is base
+          `,
+        },
+      });
+      expect(docParse).toTranslate();
+      const modelDef = docParse.translate().modelDef;
+      expect(modelDef).toBeDefined();
+      // ref points at the immediate target `top`, which IS in the namespace...
+      expect(
+        sourceNamespaceReference(modelDef!, defOf(docParse, 'ref'))?.name
+      ).toBe('top');
+      // ...while `top` itself is a reference, but its target `base` was not
+      // imported, so it has no namespace entry here (honest "no").
+      const top = defOf(docParse, 'top');
+      expect(top.referenceID).not.toBeUndefined();
+      expect(sourceNamespaceReference(modelDef!, top)).toBeUndefined();
+    });
+
+    test('a join of an import-renamed source resolves to its local name', () => {
+      const docParse = new TestTranslator(`
+        import { local is orig } from "child"
+        source: host is a extend {
+          join_one: j is local on ai = j.ai
+        }
+      `);
+      docParse.update({
+        urls: {
+          'internal://test/langtests/child':
+            'source: orig is a -> {group_by: astr, ai}',
+        },
+      });
+      expect(docParse).toTranslate();
+      const modelDef = docParse.translate().modelDef;
+      expect(modelDef).toBeDefined();
+      const host = defOf(docParse, 'host');
+      const j = host.fields.find(f => activeName(f) === 'j');
+      expect(j && isSourceDef(j)).toBeTruthy();
+      if (j && isSourceDef(j)) {
+        // The join references the imported source, known here by the name it
+        // was renamed to on import.
+        expect(sourceNamespaceReference(modelDef!, j)?.name).toBe('local');
+      }
+    });
+  });
+
   describe('Object.prototype field name collisions', () => {
     test('constructor as source name', () => {
       expect('source: constructor is a').toTranslate();
@@ -1357,6 +1574,58 @@ describe('virtual sources', () => {
       errors: {connectionDialects: {a: 'a is not a connection'}},
     });
     expect(m).toLog(error('invalid-connection-for-table-source'));
+  });
+
+  // Regression for #2845: a query source built on a virtual source used to
+  // fail model load, because loading eagerly generated SQL for the query
+  // source before a virtualMap was available.
+  test('query source built on a virtual source loads and compiles', () => {
+    const m = vsModel(`
+      type: ff is { category :: string, amount :: number }
+      source: facts_raw is _db_.virtual('facts_raw')::ff
+      source: facts_agg is facts_raw -> {
+        group_by: category
+        aggregate: total is sum(amount)
+      }
+      run: facts_agg -> { group_by: category }
+    `);
+    expect(m).toTranslate();
+    const modelDef = m.translate().modelDef!;
+    const virtualMap: VirtualMap = new Map([
+      ['_db_', new Map([['facts_raw', 'facts_table']])],
+    ]);
+    const queryModel = new QueryModel(modelDef);
+    const compiled = queryModel.compileQuery(modelDef.queryList[0], {
+      virtualMap,
+    });
+    expect(compiled.sql).toContain('facts_table');
+  });
+
+  // A query source on a virtual source, reached through a join, exercises the
+  // nested-query-source path that the old load-time field resolution walked.
+  test('joined query source on a virtual source compiles', () => {
+    const m = vsModel(`
+      type: ff is { id :: number, category :: string, amount :: number }
+      source: facts_raw is _db_.virtual('facts_raw')::ff
+      source: cat_totals is facts_raw -> {
+        group_by: category
+        aggregate: total is sum(amount)
+      }
+      source: enriched is facts_raw extend {
+        join_one: cat_totals on category = cat_totals.category
+      }
+      run: enriched -> { select: category, cat_totals.total }
+    `);
+    expect(m).toTranslate();
+    const modelDef = m.translate().modelDef!;
+    const virtualMap: VirtualMap = new Map([
+      ['_db_', new Map([['facts_raw', 'facts_table']])],
+    ]);
+    const queryModel = new QueryModel(modelDef);
+    const compiled = queryModel.compileQuery(modelDef.queryList[0], {
+      virtualMap,
+    });
+    expect(compiled.sql).toContain('facts_table');
   });
 });
 

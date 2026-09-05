@@ -1,24 +1,6 @@
 /*
- * Copyright 2023 Google LLC
- *
- * Permission is hereby granted, free of charge, to any person obtaining
- * a copy of this software and associated documentation files
- * (the "Software"), to deal in the Software without restriction,
- * including without limitation the rights to use, copy, modify, merge,
- * publish, distribute, sublicense, and/or sell copies of the Software,
- * and to permit persons to whom the Software is furnished to do so,
- * subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be
- * included in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
- * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
- * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
- * IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
- * CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
- * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
- * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ * Copyright Contributors to the Malloy project
+ * SPDX-License-Identifier: MIT
  */
 
 // import {
@@ -55,7 +37,7 @@ import type {
   OrderByClauseType,
   QueryInfo,
 } from '../dialect';
-import {Dialect, EscapeStyle, qtz} from '../dialect';
+import {Dialect, EscapeStyle, qtz, turtleGroupSetCondition} from '../dialect';
 import type {DialectFunctionOverloadDef} from '../functions';
 import {expandBlueprintMap, expandOverrideMap} from '../functions';
 import {MYSQL_DIALECT_FUNCTIONS} from './dialect_functions';
@@ -74,38 +56,68 @@ const inSeconds: Record<string, number> = {
   week: 7 * 24 * 3600,
 };
 
+/**
+ * MySQL reports a column type as
+ *
+ *     base [ '(' params ')' ] [ 'unsigned' ] [ 'zerofill' ]
+ *
+ * and normalizes every alias away before reporting, so a schema read only
+ * ever produces canonical base names. A raw cast reaches this map without
+ * that normalization, and any alias it spells -- REAL, INTEGER, NUMERIC --
+ * falls through to `sql native`.
+ *
+ * No modifier changes the Malloy type: `unsigned` only widens the range, and
+ * the sole type whose range crosses a Malloy boundary is bigint, which is
+ * already `bigint`; `zerofill` is presentation. So the map is keyed on the
+ * base name alone. DECIMAL is not in the map because its Malloy type depends
+ * on its parameters.
+ */
 const mysqlToMalloyTypes: {[key: string]: BasicAtomicTypeDef} = {
-  // TODO: This assumes tinyint is always going to be a boolean.
-  'tinyint': {type: 'boolean'},
+  'tinyint': {type: 'number', numberType: 'integer'},
   'smallint': {type: 'number', numberType: 'integer'},
   'mediumint': {type: 'number', numberType: 'integer'},
   'int': {type: 'number', numberType: 'integer'},
   'bigint': {type: 'number', numberType: 'bigint'},
-  'tinyint unsigned': {type: 'number', numberType: 'integer'},
-  'smallint unsigned': {type: 'number', numberType: 'integer'},
-  'mediumint unsigned': {type: 'number', numberType: 'integer'},
-  'int unsigned': {type: 'number', numberType: 'integer'},
-  'bigint unsigned': {type: 'number', numberType: 'bigint'},
+  'float': {type: 'number', numberType: 'float'},
   'double': {type: 'number', numberType: 'float'},
-  'varchar': {type: 'string'},
-  'varbinary': {type: 'string'},
   'char': {type: 'string'},
+  'varchar': {type: 'string'},
+  'tinytext': {type: 'string'},
   'text': {type: 'string'},
+  'mediumtext': {type: 'string'},
+  'longtext': {type: 'string'},
   'date': {type: 'date'},
   'datetime': {type: 'timestamp'},
   'timestamp': {type: 'timestamp'},
   'time': {type: 'string'},
-  'decimal': {type: 'number', numberType: 'float'},
-  // TODO: Check if we need special handling for boolean.
-  'tinyint(1)': {type: 'boolean'},
 };
+
+/**
+ * Split a reported type into its base name and numeric parameters.
+ *
+ * Only numeric parameter lists are read. ENUM and SET carry quoted value
+ * lists whose quoting rules a regex should not chase, and nothing needs
+ * their values -- both map to `sql native`.
+ */
+function parseMySQLType(sqlType: string): {base: string; params: number[]} {
+  const text = sqlType.trim().toLowerCase();
+  const base = text.match(/^\w+/)?.[0] ?? text;
+  const params = text.match(/^\w+\s*\((\d+(?:\s*,\s*\d+)*)\)/);
+  return {
+    base,
+    params: params ? params[1].split(',').map(p => parseInt(p, 10)) : [],
+  };
+}
 
 function malloyTypeToJSONTableType(malloyType: AtomicTypeDef): string {
   switch (malloyType.type) {
     case 'number':
-      if (malloyType.numberType === 'integer') {
-        return 'INT';
-      } else if (malloyType.numberType === 'bigint') {
+      // BIGINT for both: JSON_TABLE turns an out-of-range value into NULL
+      // without warning, and `integer` is not bounded at 32 bits.
+      if (
+        malloyType.numberType === 'integer' ||
+        malloyType.numberType === 'bigint'
+      ) {
         return 'BIGINT';
       } else {
         return 'DOUBLE';
@@ -113,7 +125,8 @@ function malloyTypeToJSONTableType(malloyType: AtomicTypeDef): string {
     case 'string':
       return 'CHAR(255)'; // JSON_TABLE needs a length
     case 'boolean':
-      return 'INT'; // or TINYINT(1) if you prefer
+      // MySQL has no boolean; TINYINT(1) is only a spelling of TINYINT.
+      return 'INT';
     case 'record':
     case 'array':
       return 'JSON';
@@ -152,6 +165,10 @@ export class MySQLDialect extends Dialect {
   readsNestedData = false;
   supportsComplexFilteredSources = false;
   supportsArraysInData = false;
+  // MySQL builds nested arrays with GROUP_CONCAT (not an array type), which has
+  // no in-expression slice; limiting would need query-level ROW_NUMBER plumbing
+  // the sqlAggregateTurtle seam doesn't expose. Left false (default) explicitly.
+  supportsNestedProjectionLimit = false;
   compoundObjectInSchema = false;
   booleanType: BooleanTypeSupport = 'simulated';
   orderByClause: OrderByClauseType = 'ordinal';
@@ -189,12 +206,25 @@ export class MySQLDialect extends Dialect {
   }
 
   sqlTypeToMalloyType(sqlType: string): BasicAtomicTypeDef {
-    // Remove trailing params
-    const baseSqlType = sqlType.match(/^(\w+)/)?.at(0) ?? sqlType;
+    const {base, params} = parseMySQLType(sqlType);
+    if (base === 'decimal') {
+      // DECIMAL is exact, so scale 0 is an integer rather than a float. Above
+      // 15 digits it no longer survives a JS double and must be carried as a
+      // bigint. MySQL reports precision and scale on every decimal; the
+      // defaults match its own when a bare DECIMAL is declared.
+      const [precision, scale] = [params[0] ?? 10, params[1] ?? 0];
+      if (scale > 0) {
+        return {type: 'number', numberType: 'float'};
+      }
+      return {
+        type: 'number',
+        numberType: precision <= 15 ? 'integer' : 'bigint',
+      };
+    }
     return (
-      mysqlToMalloyTypes[baseSqlType.toLowerCase()] || {
+      mysqlToMalloyTypes[base] || {
         type: 'sql native',
-        rawType: baseSqlType,
+        rawType: base,
       }
     );
   }
@@ -216,17 +246,24 @@ export class MySQLDialect extends Dialect {
   }
 
   sqlAggregateTurtle(
-    groupSet: number,
+    groupSet: number | undefined,
     fieldList: DialectFieldList,
-    orderBy: CompiledOrderBy[] | undefined
+    orderBy: CompiledOrderBy[] | undefined,
+    _limit?: number,
+    filterSQL?: string
   ): string {
     const separator = ',';
     const orderByClause = orderBy ? this.sqlTurtleOrderByClause(orderBy) : '';
-    let gc = `GROUP_CONCAT(
-      IF(group_set=${groupSet},
-        JSON_OBJECT(${this.mapFields(fieldList)})
+    const cond = turtleGroupSetCondition(groupSet, filterSQL);
+    const json = `JSON_OBJECT(${this.mapFields(fieldList)})`;
+    const element = cond
+      ? `IF(${cond},
+        ${json}
         , null
-        )
+        )`
+      : json;
+    let gc = `GROUP_CONCAT(
+      ${element}
       ${orderByClause}
       SEPARATOR '${separator}'
     )`;
@@ -560,8 +597,17 @@ export class MySQLDialect extends Dialect {
   }
 
   sqlMeasureTimeExpr(df: MeasureTimeExpr): string {
-    let lVal = df.kids.left.sql;
-    let rVal = df.kids.right.sql;
+    const from = df.kids.left;
+    const to = df.kids.right;
+    let lVal = from.sql;
+    let rVal = to.sql;
+    if (
+      TD.isDate(from.typeDef) &&
+      TD.isDate(to.typeDef) &&
+      ['week', 'month', 'quarter', 'year'].includes(df.units)
+    ) {
+      return `TIMESTAMPDIFF(${df.units.toUpperCase()}, ${lVal}, ${rVal})`;
+    }
     if (inSeconds[df.units]) {
       lVal = `UNIX_TIMESTAMP(${lVal})`;
       rVal = `UNIX_TIMESTAMP(${rVal})`;

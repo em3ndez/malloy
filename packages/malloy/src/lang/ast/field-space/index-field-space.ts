@@ -1,24 +1,6 @@
 /*
- * Copyright 2023 Google LLC
- *
- * Permission is hereby granted, free of charge, to any person obtaining
- * a copy of this software and associated documentation files
- * (the "Software"), to deal in the Software without restriction,
- * including without limitation the rights to use, copy, modify, merge,
- * publish, distribute, sublicense, and/or sell copies of the Software,
- * and to permit persons to whom the Software is furnished to do so,
- * subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be
- * included in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
- * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
- * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
- * IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
- * CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
- * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
- * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ * Copyright Contributors to the Malloy project
+ * SPDX-License-Identifier: MIT
  */
 
 import {mergeRefSummaries} from '../../composite-source-utils';
@@ -36,13 +18,11 @@ import {
   IndexFieldReference,
   WildcardFieldReference,
 } from '../query-items/field-references';
-import type {FieldSpace} from '../types/field-space';
 import type {MalloyElement} from '../types/malloy-element';
 import type {SpaceEntry} from '../types/space-entry';
 import {SpaceField} from '../types/space-field';
 import {QueryOperationSpace} from './query-spaces';
 import {ReferenceField} from './reference-field';
-import {StructSpaceField} from './static-space';
 
 export class IndexFieldSpace extends QueryOperationSpace {
   readonly segmentType = 'index';
@@ -123,56 +103,23 @@ export class IndexFieldSpace extends QueryOperationSpace {
   addRefineFromFields(_refineThis: never) {}
 
   protected addWild(wild: WildcardFieldReference): void {
-    let current: FieldSpace = this.exprSpace;
-    const joinPath: string[] = [];
-    if (wild.joinPath) {
-      // walk path to determine namespace for *
-      for (const pathPart of wild.joinPath.list) {
-        const part = pathPart.refString;
-        joinPath.push(part);
-
-        const ent = current.entry(part);
-        if (ent) {
-          if (ent instanceof StructSpaceField) {
-            current = ent.fieldSpace;
-          } else {
-            pathPart.logError(
-              'invalid-wildcard-source',
-              `Field '${part}' does not contain rows and cannot be expanded with '*'`
-            );
-            return;
-          }
-        } else {
-          pathPart.logError(
-            'wildcard-source-not-found',
-            `No such field as '${part}'`
-          );
-          return;
-        }
-      }
+    const entries = this.wildcardExpansion(wild);
+    if (entries === undefined) {
+      return;
     }
+    const joinPath = wild.joinPath?.path ?? [];
     const dialect = this.dialectObj();
     const expandEntries: {name: string; entry: SpaceEntry}[] = [];
-    for (const [name, entry] of current.entries()) {
-      if (wild.except.has(name)) {
-        continue;
-      }
-      if (entry.refType === 'parameter') {
-        continue;
-      }
+    for (const [name, entry] of entries) {
       const indexName = IndexFieldReference.indexOutputName([
         ...joinPath,
         name,
       ]);
       if (this.entry(indexName)) {
-        const conflict = this.expandedWild.get(indexName)?.path?.join('.');
-        wild.logError(
-          'name-conflict-in-wildcard-expansion',
-          `Cannot expand '${name}' in '${
-            wild.refString
-          }' because a field with that name already exists${
-            conflict ? ` (conflicts with ${conflict})` : ''
-          }`
+        this.logWildcardConflict(
+          wild,
+          name,
+          this.expandedWild.get(indexName)?.path?.join('.')
         );
       } else {
         const eTypeDesc = entry.typeDesc();

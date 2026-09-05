@@ -1,28 +1,11 @@
 /*
- * Copyright 2024 Google LLC
- *
- * Permission is hereby granted, free of charge, to any person obtaining
- * a copy of this software and associated documentation files
- * (the "Software"), to deal in the Software without restriction,
- * including without limitation the rights to use, copy, modify, merge,
- * publish, distribute, sublicense, and/or sell copies of the Software,
- * and to permit persons to whom the Software is furnished to do so,
- * subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be
- * included in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
- * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
- * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
- * IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
- * CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
- * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
- * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ * Copyright Contributors to the Malloy project
+ * SPDX-License-Identifier: MIT
  */
 
-import type {AtomicTypeDef, FieldDef} from '@malloydata/malloy';
-import {TrinoConnection, TrinoExecutor} from '.';
+import type {AtomicTypeDef, FieldDef, SQLSourceDef} from '@malloydata/malloy';
+import {TrinoDialect} from '@malloydata/malloy';
+import {PrestoConnection, TrinoConnection, TrinoExecutor} from '.';
 
 // array(varchar) is array
 const ARRAY_SCHEMA = 'array(integer)';
@@ -168,5 +151,65 @@ describe('Trino connection', () => {
         });
       });
     });
+  });
+});
+
+describe('Presto EXPLAIN schema', () => {
+  function fieldsFromPlan(plan: string): FieldDef[] {
+    const structDef: SQLSourceDef = {
+      type: 'sql_select',
+      name: 'explained',
+      connection: 'presto',
+      selectStr: 'SELECT 1 AS a',
+      dialect: 'presto',
+      fields: [],
+    };
+    PrestoConnection.schemaFromExplain(
+      {rows: [{'Query Plan': plan}], totalRows: 1},
+      structDef,
+      new TrinoDialect()
+    );
+    return structDef.fields;
+  }
+
+  it('reads a plan with a PlanNodeId group (presto >= 0.284)', () => {
+    expect(
+      fieldsFromPlan(
+        '- Output[PlanNodeId 5][a, b] => [expr:integer, expr_1:varchar]\n' +
+          '        Estimates: {rows: 1 (5B)}\n'
+      )
+    ).toEqual([
+      {name: 'a', ...intType},
+      {name: 'b', ...stringType},
+    ]);
+  });
+
+  it('reads a plan without a PlanNodeId group (presto < 0.284)', () => {
+    expect(
+      fieldsFromPlan('- Output[a, b] => [expr:integer, expr_1:varchar]\n')
+    ).toEqual([
+      {name: 'a', ...intType},
+      {name: 'b', ...stringType},
+    ]);
+  });
+
+  it('reads a field named PlanNodeId', () => {
+    expect(
+      fieldsFromPlan(
+        '- Output[PlanNodeId 5][PlanNodeId, b] => [expr:integer, expr_1:varchar]\n'
+      )
+    ).toEqual([
+      {name: 'PlanNodeId', ...intType},
+      {name: 'b', ...stringType},
+    ]);
+    expect(fieldsFromPlan('- Output[PlanNodeId] => [expr:integer]\n')).toEqual([
+      {name: 'PlanNodeId', ...intType},
+    ]);
+  });
+
+  it('reads the plan line as reported in issue #3042', () => {
+    expect(fieldsFromPlan('Output[a]=>[expr:integer]')).toEqual([
+      {name: 'a', ...intType},
+    ]);
   });
 });

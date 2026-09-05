@@ -1,24 +1,6 @@
 /*
- * Copyright 2023 Google LLC
- *
- * Permission is hereby granted, free of charge, to any person obtaining
- * a copy of this software and associated documentation files
- * (the "Software"), to deal in the Software without restriction,
- * including without limitation the rights to use, copy, modify, merge,
- * publish, distribute, sublicense, and/or sell copies of the Software,
- * and to permit persons to whom the Software is furnished to do so,
- * subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be
- * included in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
- * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
- * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
- * IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
- * CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
- * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
- * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ * Copyright Contributors to the Malloy project
+ * SPDX-License-Identifier: MIT
  */
 
 import * as malloy from '@malloydata/malloy';
@@ -129,7 +111,7 @@ describe('db:Snowflake', () => {
     const y = await conn.fetchSelectSchema(x);
     expect(y.fields).toEqual([
       {name: 'TS_NTZ', type: 'timestamp'},
-      {name: 'TS_LTZ', type: 'sql native', rawType: 'timestamp_ltz'},
+      {name: 'TS_LTZ', type: 'timestamp'},
       {name: 'TS_TZ', type: 'timestamptz'},
     ]);
   });
@@ -428,6 +410,18 @@ describe('numeric value reading', () => {
         ).toMatchResult(testModel, {F: 10.5});
       }
     );
+  });
+
+  describe('timestamp types', () => {
+    // TIMESTAMP_LTZ maps to `timestamp`, so its values reach the JS date parser
+    // through the full result pipeline. This exercises the pinned
+    // TIMESTAMP_LTZ_OUTPUT_FORMAT; under the UTC session pin the naive literal
+    // is read as UTC.
+    it('reads TIMESTAMP_LTZ as a timestamp instant', async () => {
+      await expect(
+        'run: snowflake.sql("SELECT TO_TIMESTAMP_LTZ(\'2024-01-01 12:34:56\') as ts")'
+      ).toMatchResult(testModel, {TS: new Date('2024-01-01T12:34:56.000Z')});
+    });
   });
 });
 

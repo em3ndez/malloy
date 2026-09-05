@@ -1,8 +1,6 @@
 /*
- * Copyright (c) Meta Platforms, Inc. and affiliates.
- *
- * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree.
+ * Copyright Contributors to the Malloy project
+ * SPDX-License-Identifier: MIT
  */
 
 import {RuntimeList, allDatabases} from '../../runtimes';
@@ -52,6 +50,27 @@ describe.each(runtimes.runtimeList)('filter expressions %s', (dbName, db) => {
           where: s ~ f'';
           select: *; order_by: nm asc
         }`).toMatchResult(abcTestModel, ...got('abc,def,xback,z-empty,z-null'));
+    });
+    test('none string filter (zero rows)', async () => {
+      await expect(`
+        run: abc -> {
+          where: s ~ f'none';
+          select: nm; order_by: nm asc
+        }`).toEqualResult(abcTestModel, []);
+    });
+    test('-none string filter (all rows)', async () => {
+      await expect(`
+        run: abc -> {
+          where: s ~ f'-none';
+          select: *; order_by: nm asc
+        }`).toMatchResult(abcTestModel, ...got('abc,def,xback,z-empty,z-null'));
+    });
+    test('none nested in list (abc, none)', async () => {
+      await expect(`
+        run: abc -> {
+          where: s ~ f'abc, none';
+          select: nm; order_by: nm asc
+        }`).toEqualResult(abcTestModel, got('abc'));
     });
     test('abc,def', async () => {
       await expect(`
@@ -249,6 +268,34 @@ describe.each(runtimes.runtimeList)('filter expressions %s', (dbName, db) => {
           select: n
         }`).toEqualResult(numsTestModel, [{n: 2}]);
     });
+    test('none numeric filter (zero rows)', async () => {
+      await expect(`
+        run: nums -> {
+          where: n ~ f'none'
+          select: t; order_by: t asc
+        }`).toEqualResult(numsTestModel, []);
+    });
+    test('not none numeric filter (all rows)', async () => {
+      await expect(`
+        run: nums -> {
+          where: n ~ f'not none'
+          select: t; order_by: t asc
+        }`).toEqualResult(numsTestModel, [
+        {t: '0'},
+        {t: '1'},
+        {t: '2'},
+        {t: '3'},
+        {t: '4'},
+        {t: 'null'},
+      ]);
+    });
+    test('none nested in or (none or 2)', async () => {
+      await expect(`
+        run: nums -> {
+          where: n ~ f'none or 2'
+          select: t; order_by: t asc
+        }`).toEqualResult(numsTestModel, [{t: '2'}]);
+    });
     test('!= 2', async () => {
       await expect(`
         run: nums -> {
@@ -431,6 +478,24 @@ describe.each(runtimes.runtimeList)('filter expressions %s', (dbName, db) => {
           where: b ~ f'nOt NuLL'
           select: t; order_by: t asc
         }`).toEqualResult(factsTestModel, [{t: 'false'}, {t: 'true'}]);
+    });
+    test.when(testBoolean)('none boolean filter (zero rows)', async () => {
+      await expect(`
+        run: ${factsSrc} -> {
+          where: b ~ f'none'
+          select: t; order_by: t asc
+        }`).toEqualResult(factsTestModel, []);
+    });
+    test.when(testBoolean)('not none boolean filter (all rows)', async () => {
+      await expect(`
+        run: ${factsSrc} -> {
+          where: b ~ f'not none'
+          select: t; order_by: t asc
+        }`).toEqualResult(factsTestModel, [
+        {t: 'false'},
+        {t: 'null'},
+        {t: 'true'},
+      ]);
     });
     test.when(testBoolean)('not true', async () => {
       await expect(`
@@ -638,6 +703,24 @@ describe.each(runtimes.runtimeList)('filter expressions %s', (dbName, db) => {
         "f'2 days ago'",
         '2001-01-13 00:00:00',
         '2001-01-14 00:00:00'
+      );
+      await expect('run: rangeQuery').toMatchRows(rangeQuery, inRange);
+    });
+    test('none temporal filter (zero rows)', async () => {
+      const rangeQuery = mkRangeQuery(
+        "f'none'",
+        '2000-01-01 00:00:00',
+        '2001-01-01 00:00:00'
+      );
+      await expect('run: rangeQuery').toEqualResult(rangeQuery, []);
+    });
+    test('none nested in temporal or', async () => {
+      // `none or <range>` === `<range>`; exercises the nested `case 'none'` in
+      // TemporalFilterCompiler.compile (silent-`undefined` guard).
+      const rangeQuery = mkRangeQuery(
+        "f'none or 2000 to 2001'",
+        '2000-01-01 00:00:00',
+        '2001-01-01 00:00:00'
       );
       await expect('run: rangeQuery').toMatchRows(rangeQuery, inRange);
     });
@@ -1116,6 +1199,39 @@ describe.each(runtimes.runtimeList)('filter expressions %s', (dbName, db) => {
           }
         `).toMatchResult(exactTimeModel, {n: 'exact'});
       });
+      test.when(tzTesting && db.dialect.hasTimestamptz)(
+        'date filter on timestamptz column respects query time zone',
+        async () => {
+          // Tokyo May 23 = 2026-05-22 15:00 UTC to 2026-05-23 15:00 UTC.
+          // Build a source whose `t` column is timestamptz, and confirm the
+          // f`2026-05-23` filter (in Tokyo) picks the right rows.
+          const tstzLit = (s: string): string => {
+            const node = Dialect.makeTimeLiteralNode(
+              db.dialect,
+              s,
+              'UTC',
+              undefined,
+              'timestamp'
+            );
+            return db.dialect.exprToSQL({}, node) || '';
+          };
+          const events = wrapTestModel(
+            db,
+            `query: events is ${dbName}.sql("""
+              SELECT ${tstzLit('2026-05-22 14:00:00')} AS ${q`t`}, 'before' AS ${q`n`}
+              UNION ALL SELECT ${tstzLit('2026-05-22 16:00:00')}, 'first'
+              UNION ALL SELECT ${tstzLit('2026-05-23 14:59:59')}, 'last'
+              UNION ALL SELECT ${tstzLit('2026-05-23 15:00:00')}, 'post-range'
+            """) -> {
+              timezone: 'Asia/Tokyo'
+              where: t ~ f'2026-05-23'
+              select: t, n
+              order_by: n
+            }`
+          );
+          await expect('run: events').toMatchRows(events, inRange);
+        }
+      );
       test.when(tzTesting)(
         'month offsets cross DST boundary in query time zone',
         async () => {

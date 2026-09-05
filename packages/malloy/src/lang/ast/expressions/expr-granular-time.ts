@@ -1,24 +1,6 @@
 /*
- * Copyright 2023 Google LLC
- *
- * Permission is hereby granted, free of charge, to any person obtaining
- * a copy of this software and associated documentation files
- * (the "Software"), to deal in the Software without restriction,
- * including without limitation the rights to use, copy, modify, merge,
- * publish, distribute, sublicense, and/or sell copies of the Software,
- * and to permit persons to whom the Software is furnished to do so,
- * subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be
- * included in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
- * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
- * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
- * IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
- * CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
- * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
- * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ * Copyright Contributors to the Malloy project
+ * SPDX-License-Identifier: MIT
  */
 
 import type {
@@ -26,7 +8,12 @@ import type {
   TemporalTypeDef,
   TimestampUnit,
 } from '../../../model/malloy_types';
-import {isDateUnit, mkTemporal, TD} from '../../../model/malloy_types';
+import {
+  isBasicAtomicType,
+  isDateUnit,
+  mkTemporal,
+  TD,
+} from '../../../model/malloy_types';
 
 import {errorFor} from '../ast-utils';
 import * as TDU from '../typedesc-utils';
@@ -75,7 +62,7 @@ export class ExprGranularTime extends ExpressionDef {
     };
   }
 
-  getExpression(fs: FieldSpace): ExprValue {
+  protected computeExpression(fs: FieldSpace): ExprValue {
     const timeframe = this.units;
     const exprVal = this.expr.getExpression(fs);
     let timeType: TemporalTypeDef;
@@ -111,10 +98,29 @@ export class ExprGranularTime extends ExpressionDef {
       return tsVal;
     }
     if (exprVal.type !== 'error') {
-      this.logError(
-        'unsupported-type-for-time-truncation',
-        `Cannot do time truncation on type '${exprVal.type}'`
-      );
+      if (!isBasicAtomicType(exprVal.type)) {
+        // The truncation target has fields (a join/struct/record/array), so it
+        // can't be a time value. The likely intent is a field whose name is a
+        // time unit (e.g. `flight.year`); since `.year` parses as a truncation
+        // and time units are reserved words, that field has to be quoted.
+        const ref = this.expr.drillExpression();
+        const lhs =
+          ref?.kind === 'field_reference'
+            ? [...(ref.path ?? []), ref.name].join('.')
+            : undefined;
+        const quoted = lhs ? `${lhs}.\`${timeframe}\`` : `\`${timeframe}\``;
+        this.logError(
+          'unsupported-type-for-time-truncation',
+          `'.${timeframe}' is a time truncation, but ${
+            lhs ? `'${lhs}'` : 'the left side'
+          } is type '${exprVal.type}', not a time value. If '${timeframe}' is a field name it must be quoted, because it is a reserved word: ${quoted}`
+        );
+      } else {
+        this.logError(
+          'unsupported-type-for-time-truncation',
+          `Cannot do time truncation on type '${exprVal.type}'`
+        );
+      }
     }
     const returnType = {...exprVal};
     if (exprVal.type === 'error') {

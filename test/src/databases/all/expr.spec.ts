@@ -1,24 +1,6 @@
 /*
- * Copyright 2023 Google LLC
- *
- * Permission is hereby granted, free of charge, to any person obtaining
- * a copy of this software and associated documentation files
- * (the "Software"), to deal in the Software without restriction,
- * including without limitation the rights to use, copy, modify, merge,
- * publish, distribute, sublicense, and/or sell copies of the Software,
- * and to permit persons to whom the Software is furnished to do so,
- * subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be
- * included in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
- * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
- * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
- * IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
- * CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
- * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
- * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ * Copyright Contributors to the Malloy project
+ * SPDX-License-Identifier: MIT
  */
 
 import {RuntimeList, allDatabases} from '../../runtimes';
@@ -355,12 +337,8 @@ describe.each(runtimes.runtimeList)('%s', (databaseName, runtime) => {
     });
   });
 
-  // TODO not sure why this test needs to be skipped on postgres, feels like an oversight
-  // NOTE: unless underlying type is stored as a timestamp snowflake does not support extraction
-  test.when(!['postgres', 'snowflake', 'mysql'].includes(databaseName))(
-    'model: dates named',
-    async () => {
-      await expect(`
+  test('model: dates named', async () => {
+    await expect(`
       run: ${databaseName}.table('malloytest.alltypes')->{
         group_by:
           t_date,
@@ -375,19 +353,18 @@ describe.each(runtimes.runtimeList)('%s', (databaseName, runtime) => {
           t_timestamp_year is t_timestamp.year,
       }
     `).toMatchResult(testModel, {
-        t_date: new Date('2020-03-02'),
-        t_date_month: new Date('2020-03-01'),
-        t_date_year: new Date('2020-01-01'),
-        t_timestamp: new Date('2020-03-02T12:35:56.000Z'),
-        t_timestamp_second: new Date('2020-03-02T12:35:56.000Z'),
-        t_timestamp_minute: new Date('2020-03-02T12:35:00.000Z'),
-        t_timestamp_hour: new Date('2020-03-02T12:00:00.000Z'),
-        t_timestamp_date: new Date('2020-03-02'),
-        t_timestamp_month: new Date('2020-03-01'),
-        t_timestamp_year: new Date('2020-01-01'),
-      });
-    }
-  );
+      t_date: new Date('2020-03-02'),
+      t_date_month: new Date('2020-03-01'),
+      t_date_year: new Date('2020-01-01'),
+      t_timestamp: new Date('2020-03-02T12:35:56.000Z'),
+      t_timestamp_second: new Date('2020-03-02T12:35:56.000Z'),
+      t_timestamp_minute: new Date('2020-03-02T12:35:00.000Z'),
+      t_timestamp_hour: new Date('2020-03-02T12:00:00.000Z'),
+      t_timestamp_date: new Date('2020-03-02'),
+      t_timestamp_month: new Date('2020-03-01'),
+      t_timestamp_year: new Date('2020-01-01'),
+    });
+  });
 
   it('named query metadata undefined', async () => {
     const result = await expressionModel
@@ -866,6 +843,13 @@ describe.each(runtimes.runtimeList)('%s', (databaseName, runtime) => {
     });
     test('quote backslash', async () => {
       expect(await sqlEq(`'${back}${back}'`, back)).isSqlEq();
+    });
+    test('strings containing newline', async () => {
+      await expect(
+        `run: ${databaseName}.sql("SELECT 1 as one") -> {
+          select: newline is 'a${back}nb'
+        }`
+      ).toMatchResult(testModel, {newline: 'a\nb'});
     });
   });
 

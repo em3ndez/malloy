@@ -1,25 +1,7 @@
 /* eslint-disable no-console */
 /*
- * Copyright 2023 Google LLC
- *
- * Permission is hereby granted, free of charge, to any person obtaining
- * a copy of this software and associated documentation files
- * (the "Software"), to deal in the Software without restriction,
- * including without limitation the rights to use, copy, modify, merge,
- * publish, distribute, sublicense, and/or sell copies of the Software,
- * and to permit persons to whom the Software is furnished to do so,
- * subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be
- * included in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
- * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
- * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
- * IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
- * CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
- * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
- * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ * Copyright Contributors to the Malloy project
+ * SPDX-License-Identifier: MIT
  */
 
 import {inspect} from 'util';
@@ -41,6 +23,7 @@ import type {
   UserTypeDef,
 } from '../../model/malloy_types';
 import {
+  activeName,
   isQuerySegment,
   isSourceDef,
   isUserTypeDef,
@@ -65,6 +48,7 @@ import type {
 } from '../parse-log';
 import type {EventStream} from '../../runtime_types';
 import {sqlKey} from '../../model/sql_block';
+import {mkModelDef} from '../../model/utils';
 
 export function pretty(thing: unknown): string {
   return inspect(thing, {breakLength: 100, depth: Infinity});
@@ -204,6 +188,17 @@ export const aTableDef: TableSourceDef = {
   ],
 };
 
+/**
+ * A second connection speaking the same dialect as `_db_`. Two sources can
+ * then compile to identical SQL on different connections, which isolates the
+ * connection check from the dialect check, and is exactly the case where
+ * persistence could forget that a build target is a table on a connection.
+ */
+export const db2TableDef: TableSourceDef = {
+  ...aTableDef,
+  connection: '_db2_',
+};
+
 // BigQuery-compatible table definition (no timestamptz support)
 export const bqTableDef: SourceDef = {
   type: 'table',
@@ -214,6 +209,18 @@ export const bqTableDef: SourceDef = {
   fields: baseFields,
 };
 
+// Postgres table definition — Postgres is the only dialect with
+// `hasFinalStage = true`, so it is the one that exercises the persist-source
+// finalize=false path (see PersistSource.getSQL).
+export const pgTableDef: SourceDef = {
+  type: 'table',
+  name: 'aTable',
+  dialect: 'postgres',
+  tablePath: 'aTable',
+  connection: '_pg_',
+  fields: baseFields,
+};
+
 /**
  * A TestTranlator never actually talks to connection, instead uses
  * some mocked schema definitions.
@@ -221,7 +228,9 @@ export const bqTableDef: SourceDef = {
 
 export const mockSchema: TableSourceDef[] = [
   aTableDef,
+  db2TableDef,
   bqTableDef,
+  pgTableDef,
   {
     type: 'table',
     name: 'carriers',
@@ -386,10 +395,14 @@ export class TestTranslator extends MalloyTranslator {
   allDialectsEnabled = true;
   testRoot?: TestRoot;
   /*
-   * There are two connections:
+   * There are four connections:
    *   _db_  - duckdb dialect, with the following tables ...
    *      aTable, malloytest.carriers, malloytest.flights, malloytest.airports
+   *   _db2_ - duckdb dialect, with one table, aTable. A second connection
+   *      on the same dialect as _db_, for cross-connection tests.
    *   _bq_  - bigquery/standardsql dialect, with one table
+   *      aTable
+   *   _pg_  - postgres dialect, with one table
    *      aTable
    *
    * The "aTable" table is a mocked table with one column of each type.
@@ -414,14 +427,12 @@ export class TestTranslator extends MalloyTranslator {
    */
 
   internalModel: ModelDef = {
-    name: testURI,
-    exports: [],
-    queryList: [],
-    sourceRegistry: {},
-    dependencies: {},
+    ...mkModelDef(testURI, testURI),
     contents: {
       _db_: {type: 'connection', name: '_db_'},
+      _db2_: {type: 'connection', name: '_db2_'},
       _bq_: {type: 'connection', name: '_bq_'},
+      _pg_: {type: 'connection', name: '_pg_'},
       a: {...aTableDef, primaryKey: 'astr', name: 'a'},
       b: {...aTableDef, primaryKey: 'astr', name: 'b'},
       bq_a: {...bqTableDef, primaryKey: 'astr', name: 'bq_a'},
@@ -491,7 +502,9 @@ export class TestTranslator extends MalloyTranslator {
       );
     }
     this.connectionDialectZone.define('_db_', TEST_DIALECT);
+    this.connectionDialectZone.define('_db2_', TEST_DIALECT);
     this.connectionDialectZone.define('_bq_', 'standardsql');
+    this.connectionDialectZone.define('_pg_', 'postgres');
     for (const flag of options.compilerFlags ?? []) {
       this.compilerFlagSrc.push(`##! ${flag}\n`);
     }
@@ -668,7 +681,7 @@ export function getModelQuery(modelDef: ModelDef, name: string): Query {
 
 export function getFieldDef(source: StructDef, name: string): FieldDef {
   for (const f of source.fields) {
-    if (f.as ?? f.name === name) {
+    if (activeName(f) === name) {
       return f;
     }
   }
@@ -685,7 +698,7 @@ export function getQueryFieldDef(
         if (name === f.path[f.path.length - 1]) {
           return f;
         }
-      } else if (f.as ?? f.name === name) {
+      } else if (activeName(f) === name) {
         return f;
       }
     }
@@ -851,4 +864,33 @@ export function warningMessage(message: string | RegExp): {
   severity: LogSeverity;
 } {
   return {message, severity: 'warn'};
+}
+
+/**
+ * Drain a translation's SQL schema requests, answering each with the schema of
+ * `aTable` on the connection which asked, until it stops asking. A `sql()`
+ * source needs a schema before the translation can finish, and nothing in a
+ * TestTranslator provides one.
+ *
+ * @param selectStr What to record as the block's SELECT. Defaults to the
+ *   statement which was requested; pass a value to hand back something else.
+ */
+export function answerSQLSchemaRequests(
+  translator: TestTranslator,
+  selectStr?: string
+): void {
+  for (;;) {
+    const compileSQL = translator.translate().compileSQL;
+    if (compileSQL === undefined) return;
+    const key = sqlKey(compileSQL.connection, compileSQL.selectStr);
+    const schema: SQLSourceDef = {
+      type: 'sql_select',
+      name: key,
+      dialect: TEST_DIALECT,
+      connection: compileSQL.connection,
+      selectStr: selectStr ?? compileSQL.selectStr,
+      fields: aTableDef.fields,
+    };
+    translator.update({compileSQL: {[key]: schema}});
+  }
 }

@@ -1,8 +1,6 @@
 /*
- * Copyright (c) Meta Platforms, Inc. and affiliates.
- *
- * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree.
+ * Copyright Contributors to the Malloy project
+ * SPDX-License-Identifier: MIT
  */
 
 import {diff} from 'jest-diff';
@@ -171,6 +169,19 @@ describe('string filter expressions', () => {
   });
   test('is not empty', () => {
     expect('-empty').isStringFilter({operator: 'empty', not: true});
+  });
+  test('is none', () => {
+    expect('none').isStringFilter({operator: 'none'});
+    expect('NONE').isStringFilter({operator: 'none'}, 'none');
+  });
+  test('is not none', () => {
+    expect('-none').isStringFilter({operator: 'none', not: true});
+  });
+  test('= none (escaped literal round-trips both ways)', () => {
+    expect('\\none').isStringFilter({operator: '=', values: ['none']});
+  });
+  test('nonesuch is a literal, not the keyword', () => {
+    expect('nonesuch').isStringFilter({operator: '=', values: ['nonesuch']});
   });
   test('nulldata', () => {
     expect('nulldata').isStringFilter({operator: '=', values: ['nulldata']});

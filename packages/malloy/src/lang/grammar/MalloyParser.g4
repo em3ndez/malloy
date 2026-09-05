@@ -1,25 +1,6 @@
 /*
- * Copyright 2023 Google LLC
- * Copyright (c) Meta Platforms, Inc. and affiliates.
- *
- * Permission is hereby granted, free of charge, to any person obtaining
- * a copy of this software and associated documentation files
- * (the "Software"), to deal in the Software without restriction,
- * including without limitation the rights to use, copy, modify, merge,
- * publish, distribute, sublicense, and/or sell copies of the Software,
- * and to permit persons to whom the Software is furnished to do so,
- * subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be
- * included in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
- * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
- * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
- * IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
- * CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
- * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
- * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ * Copyright Contributors to the Malloy project
+ * SPDX-License-Identifier: MIT
  */
 
 parser grammar MalloyParser;
@@ -33,6 +14,7 @@ malloyStatement
   | defineQuery
   | defineGivenStatement
   | importStatement
+  | exportStatement
   | runStatement
   | docAnnotations
   | ignoredObjectAnnotations
@@ -162,6 +144,14 @@ importItem
 
 importURL
   : string
+  ;
+
+exportStatement
+  : EXPORT OCURLY exportItem (COMMA exportItem)* COMMA? CCURLY
+  ;
+
+exportItem
+  : id
   ;
 
 docAnnotations
@@ -580,7 +570,33 @@ ordering
   ;
 
 orderBySpec
-  : (INTEGER_LITERAL | fieldName) ( ASC | DESC ) ?
+  : (INTEGER_LITERAL | possibleBadPath) ( ASC | DESC ) ?
+  ;
+
+// order_by names a single (unquoted) output column, but we accept a more
+// permissive reference -- a dotted path and/or reserved-word segments like time
+// units (`flights.dep_year`) -- and let the visitor decide: a lone ordinary
+// name is fine, a lone reserved word must be quoted, a dotted path is never
+// legal here. Reusable wherever a single name is required and a path or a bare
+// keyword is a likely mistake worth a good error. See visitOrderBySpec.
+possibleBadPath
+  : badWord (DOT badWord)*
+  ;
+
+// A name segment that the parser accepts but that may be reserved. `fieldName`
+// is a legal name; everything else is a reserved word the user would have to
+// quote. Keep in sync with the bare keywords in MalloyLexer.g4 -- MINUS `ASC`
+// and `DESC`, which are the order_by direction suffix (allowing them here would
+// make `order_by: foo asc` ambiguous). `timeframe` covers the time units.
+badWord
+  : fieldName
+  | timeframe
+  | ALL | AND | AS | AVG | BOOLEAN | BY | CASE | CAST | COUNT | COMPOSE | DATE
+  | DISTINCT | ELSE | END | EXCLUDE | EXPORT | EXTEND | FALSE | FILTER | FULL
+  | FOR | FROM | HAS | IMPORT | INCLUDE | INNER | IS | IN | INTERNAL_KW | JSON
+  | LEFT | LIKE | MAX | MIN | NOT | NOW | NULL | NUMBER | ON | OR | PICK
+  | PRIVATE_KW | PUBLIC_KW | RIGHT | STRING | SOURCE_KW | SUM | SQL | TABLE
+  | THEN | THIS | TIMESTAMPTZ | TIMESTAMP | TO | TRUE | WHEN | WITH | VIRTUAL
   ;
 
 limitStatement
@@ -675,7 +691,7 @@ literal
   | (TRUE | FALSE)                              # exprBool
   | HACKY_REGEX                                 # exprRegex
   | filterString                                # filterString_stub
-  | NOW                                         # exprNow
+  | NOW (OPAREN CPAREN)?                         # exprNow
   ;
 
 dateLiteral

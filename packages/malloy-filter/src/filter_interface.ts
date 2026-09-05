@@ -1,8 +1,6 @@
 /*
- * Copyright (c) Meta Platforms, Inc. and affiliates.
- *
- * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree.
+ * Copyright Contributors to the Malloy project
+ * SPDX-License-Identifier: MIT
  */
 
 interface FilterOperator<T extends string> {
@@ -14,6 +12,11 @@ interface Negatable {
 }
 
 export interface Null extends FilterOperator<'null'>, Negatable {}
+
+// The "always false" filter — matches nothing. Companion to the empty filter
+// `f''` (which is the null/absent filter, "always true"). Universal across all
+// filter types. `not none` is "always true".
+export interface None extends FilterOperator<'none'>, Negatable {}
 
 export type ChainOp = 'and' | 'or' | ',';
 export function isChainOp(s: string): s is ChainOp {
@@ -53,6 +56,7 @@ export type StringFilter =
   | StringCondition
   | StringMatch
   | Null
+  | None
   | StringEmpty
   | ClauseChain<StringFilter>
   | ClauseGroup<StringFilter>;
@@ -70,6 +74,7 @@ export function isStringFilter(sc: unknown): sc is StringFilter {
       '=',
       '~',
       'null',
+      'none',
       'empty',
       'and',
       'or',
@@ -85,7 +90,7 @@ export interface BooleanCondition extends Negatable {
   operator: BooleanOperator;
 }
 
-export type BooleanFilter = BooleanCondition | Null;
+export type BooleanFilter = BooleanCondition | Null | None;
 
 export function isBooleanFilter(bc: unknown): bc is BooleanFilter {
   return (
@@ -93,7 +98,7 @@ export function isBooleanFilter(bc: unknown): bc is BooleanFilter {
     bc !== null &&
     'operator' in bc &&
     typeof bc.operator === 'string' &&
-    ['null', 'true', 'false', '=false', '=true'].includes(bc.operator)
+    ['null', 'none', 'true', 'false', '=false', '=true'].includes(bc.operator)
   );
 }
 
@@ -117,6 +122,7 @@ export type NumberFilter =
   | NumberCondition
   | NumberRange
   | Null
+  | None
   | ClauseGroup<NumberFilter>
   | BooleanChain<NumberFilter>;
 
@@ -138,19 +144,13 @@ export function isNumberFilter(sc: unknown): sc is NumberFilter {
       'or',
       '()',
       'null',
+      'none',
     ].includes(sc.operator)
   );
 }
 
 export type TemporalUnit =
-  | 'second'
-  | 'minute'
-  | 'hour'
-  | 'day'
-  | 'week'
-  | 'month'
-  | 'quarter'
-  | 'year';
+  'second' | 'minute' | 'hour' | 'day' | 'week' | 'month' | 'quarter' | 'year';
 
 export interface TemporalLiteral {
   moment: 'literal';
@@ -236,6 +236,7 @@ export interface InMoment extends FilterOperator<'in'>, Negatable {
 
 export type TemporalFilter =
   | Null
+  | None
   | Before
   | After
   | To
@@ -267,15 +268,13 @@ export function isTemporalFilter(sc: unknown): sc is TemporalFilter {
       'next',
       '()',
       'null',
+      'none',
     ].includes(sc.operator)
   );
 }
 
 export type FilterExpression =
-  | BooleanFilter
-  | NumberFilter
-  | StringFilter
-  | TemporalFilter;
+  BooleanFilter | NumberFilter | StringFilter | TemporalFilter;
 
 export function isFilterExpression(obj: unknown): obj is FilterExpression {
   return typeof obj === 'object' && obj !== null && 'operator' in obj;
@@ -296,12 +295,7 @@ export interface FilterParserResponse<T extends FilterExpression> {
 }
 
 export type FilterableType =
-  | 'string'
-  | 'number'
-  | 'boolean'
-  | 'timestamp'
-  | 'timestamptz'
-  | 'date';
+  'string' | 'number' | 'boolean' | 'timestamp' | 'timestamptz' | 'date';
 export function isFilterable(s: string): s is FilterableType {
   return [
     'string',

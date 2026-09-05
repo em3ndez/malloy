@@ -1,8 +1,6 @@
 /*
- * Copyright (c) Meta Platforms, Inc. and affiliates.
- *
- * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree.
+ * Copyright Contributors to the Malloy project
+ * SPDX-License-Identifier: MIT
  */
 
 import type {MalloyRendererOptions} from './types';
@@ -10,6 +8,7 @@ import type {RenderPluginFactory} from './plugin-types';
 import {MalloyViz} from './malloy-viz';
 import {LineChartPluginFactory} from '@/plugins/line-chart/line-chart-plugin';
 import {BarChartPluginFactory} from '@/plugins/bar-chart/bar-chart-plugin';
+import {ComboChartPluginFactory} from '@/plugins/combo-chart/combo-chart-plugin';
 import {BigValuePluginFactory} from '@/plugins/big-value/big-value-plugin';
 import {ScatterChartPluginFactory} from '@/plugins/scatter-chart/scatter-chart-plugin';
 import {ShapeMapPluginFactory} from '@/plugins/shape-map/shape-map-plugin';
@@ -24,6 +23,7 @@ export class MalloyRenderer {
     this.pluginRegistry = [
       LineChartPluginFactory,
       BarChartPluginFactory,
+      ComboChartPluginFactory,
       BigValuePluginFactory,
       ScatterChartPluginFactory,
       ShapeMapPluginFactory,

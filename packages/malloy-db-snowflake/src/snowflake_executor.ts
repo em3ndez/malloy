@@ -1,24 +1,6 @@
 /*
- * Copyright 2023 Google LLC
- *
- * Permission is hereby granted, free of charge, to any person obtaining
- * a copy of this software and associated documentation files
- * (the "Software"), to deal in the Software without restriction,
- * including without limitation the rights to use, copy, modify, merge,
- * publish, distribute, sublicense, and/or sell copies of the Software,
- * and to permit persons to whom the Software is furnished to do so,
- * subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be
- * included in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
- * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
- * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
- * IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
- * CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
- * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
- * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ * Copyright Contributors to the Malloy project
+ * SPDX-License-Identifier: MIT
  */
 
 import type {
@@ -39,6 +21,32 @@ import {toAsyncGenerator} from '@malloydata/malloy';
 
 // Disable snowflake-sdk logging by default (issue #2565)
 snowflake.configure({logLevel: 'OFF'});
+
+// Snowflake QUERY_TAG is a single free-form string, max 2000 chars.
+const MAX_QUERY_TAG_LENGTH = 2000;
+
+/**
+ * Render a query's metadata into a Snowflake `QUERY_TAG` value: the property
+ * bag serialized as JSON, so the properties are queryable in `QUERY_HISTORY` /
+ * `QUERY_ATTRIBUTION_HISTORY`. Case is preserved. Clamped to Snowflake's
+ * 2000-char limit as a runtime backstop.
+ *
+ * The tag is applied per statement via `parameters.QUERY_TAG` (see `_execute`);
+ * the connection-level `connOptions.queryTag` is deliberately never set,
+ * because the SDK overwrites caller-supplied per-statement parameters whenever
+ * it is (snowflake-sdk `statement.js`).
+ *
+ * The bag arrives already validated: SnowflakeConnection checks it before
+ * handing it to the executor.
+ */
+export function snowflakeQueryTag(options?: RunSQLOptions): string | undefined {
+  const bag = options?.queryMetadata;
+  if (bag === undefined || Object.keys(bag).length === 0) return undefined;
+  const tag = JSON.stringify(bag);
+  return tag.length > MAX_QUERY_TAG_LENGTH
+    ? tag.slice(0, MAX_QUERY_TAG_LENGTH)
+    : tag;
+}
 
 export interface ConnectionConfigFile {
   // a toml file with snowflake connection settings
@@ -91,24 +99,25 @@ export class SnowflakeExecutor {
 
   public static getConnectionOptionsFromEnv(): ConnectionOptions | undefined {
     const account = process.env['SNOWFLAKE_ACCOUNT'];
-    if (account) {
-      const username = process.env['SNOWFLAKE_USER'];
-      const password = process.env['SNOWFLAKE_PASSWORD'];
-      const warehouse = process.env['SNOWFLAKE_WAREHOUSE'];
-      const database = process.env['SNOWFLAKE_DATABASE'];
-      const schema = process.env['SNOWFLAKE_SCHEMA'];
-      return {
-        account,
-        username,
-        password,
-        warehouse,
-        database,
-        schema,
-        // Return integers as native JS BigInt to preserve precision
-        jsTreatIntegerAsBigInt: true,
-      };
+    if (!account) {
+      return undefined;
     }
-    return undefined;
+    return {
+      ...SnowflakeExecutor.defaultConnectionOptions,
+      account,
+      username: process.env['SNOWFLAKE_USER'],
+      password: process.env['SNOWFLAKE_PASSWORD'],
+      role: process.env['SNOWFLAKE_ROLE'],
+      warehouse: process.env['SNOWFLAKE_WAREHOUSE'],
+      database: process.env['SNOWFLAKE_DATABASE'],
+      schema: process.env['SNOWFLAKE_SCHEMA'],
+      // Key-pair auth requires SNOWFLAKE_AUTHENTICATOR=SNOWFLAKE_JWT.
+      // Names match the Snowflake CLI's; _RAW is PEM text, _FILE a path.
+      authenticator: process.env['SNOWFLAKE_AUTHENTICATOR'],
+      privateKey: process.env['SNOWFLAKE_PRIVATE_KEY_RAW'],
+      privateKeyPath: process.env['SNOWFLAKE_PRIVATE_KEY_FILE'],
+      privateKeyPass: process.env['SNOWFLAKE_PRIVATE_KEY_PASSPHRASE'],
+    };
   }
 
   public static getConnectionOptionsFromToml(
@@ -175,6 +184,10 @@ export class SnowflakeExecutor {
     if (abortSignal?.aborted) {
       throw new Error('Query aborted');
     }
+    // Apply the query tag per statement (never via connOptions.queryTag — the
+    // SDK clobbers per-statement parameters when that is set).
+    const queryTag = snowflakeQueryTag(options);
+    const parameters = queryTag ? {QUERY_TAG: queryTag} : undefined;
     let _statement: RowStatement | undefined;
     const cancel = () => {
       _statement?.cancel();
@@ -188,6 +201,7 @@ export class SnowflakeExecutor {
         _statement = conn.execute({
           sqlText,
           binds,
+          parameters,
           complete: (
             err: SnowflakeError | undefined,
             _stmt: RowStatement,
@@ -247,9 +261,17 @@ export class SnowflakeExecutor {
       options,
       timeoutMs
     );
-    // so javascript can parse the dates
+    // so javascript can parse the dates. LTZ is pinned to the same ISO format
+    // as NTZ because Malloy maps TIMESTAMP_LTZ to `timestamp` (and writes its
+    // own timestamp columns as LTZ), so LTZ values reach the same JS parse path.
     await this._execute(
       "ALTER SESSION SET TIMESTAMP_NTZ_OUTPUT_FORMAT='YYYY-MM-DDTHH24:MI:SS.FF3TZH:TZM';",
+      conn,
+      options,
+      timeoutMs
+    );
+    await this._execute(
+      "ALTER SESSION SET TIMESTAMP_LTZ_OUTPUT_FORMAT='YYYY-MM-DDTHH24:MI:SS.FF3TZH:TZM';",
       conn,
       options,
       timeoutMs
@@ -354,6 +376,9 @@ export class SnowflakeExecutor {
       throw new Error('Query aborted');
     }
 
+    // Apply the query tag per statement (see _execute).
+    const queryTag = snowflakeQueryTag(options);
+    const parameters = queryTag ? {QUERY_TAG: queryTag} : undefined;
     // Track the statement so abort can cancel it during conn.execute()
     let _statement: RowStatement | undefined;
     const abortSignal = options?.abortSignal;
@@ -372,6 +397,7 @@ export class SnowflakeExecutor {
         _statement = conn.execute({
           sqlText,
           streamResult: true,
+          parameters,
           complete: (err: SnowflakeError | undefined, _stmt: RowStatement) => {
             if (err) {
               if (cancelFromAbort) {

@@ -1,5 +1,5 @@
 import type {Tag} from '@malloydata/malloy-tag';
-import {tagFromAnnotations} from '../util';
+import {tagFromAnnotations} from '@malloydata/malloy';
 import type * as Malloy from '@malloydata/malloy-interfaces';
 import type {
   BooleanFieldInfo,
@@ -169,14 +169,17 @@ export function isSQLNativeFieldInfo(
   return field.type.kind === 'sql_native_type';
 }
 
+// Legacy renderer tags that map directly to a renderAs value. Chart types
+// (bar_chart/line_chart/combo_chart) are intentionally NOT listed here — they
+// are normalized to `viz=…` by convertLegacyToVizTag and dispatched via the
+// single VIZ_CHART_TYPES source of truth in the `viz` block below, so listing
+// them here would duplicate that concept.
 const RENDER_TAG_LIST = [
   'link',
   'image',
   'cell',
   'list',
   'list_detail',
-  'bar_chart',
-  'line_chart',
   'dashboard',
   'scatter_chart',
   'shape_map',
@@ -211,7 +214,6 @@ export function shouldRenderAs({
     if (tag.has(RENDER_TAG_LIST[i])) {
       const tagName = RENDER_TAG_LIST[i];
       if (tagName === 'list' || tagName === 'list_detail') return 'list';
-      if (tagName === 'bar_chart' || tagName === 'line_chart') return 'chart';
       return tagName;
     }
   }
@@ -231,8 +233,8 @@ export function shouldRenderAs({
   return result;
 }
 
-export function tagFor(field: Malloy.DimensionInfo, prefix = '# ') {
-  return tagFromAnnotations(field.annotations, prefix);
+export function tagFor(field: Malloy.DimensionInfo, route = '') {
+  return tagFromAnnotations(field.annotations, route);
 }
 
 export function extractExpressionFromTag(

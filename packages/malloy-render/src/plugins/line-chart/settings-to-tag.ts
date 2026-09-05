@@ -1,25 +1,12 @@
 /*
- * Copyright (c) Meta Platforms, Inc. and affiliates.
- *
- * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree.
+ * Copyright Contributors to the Malloy project
+ * SPDX-License-Identifier: MIT
  */
 
 import {Tag} from '@malloydata/malloy-tag';
 import type {LineChartSettings} from './line-chart-settings';
 import {defaultLineChartSettings} from './line-chart-settings';
-
-function extractFieldName(fieldPath: string): string {
-  try {
-    const parsed = JSON.parse(fieldPath);
-    if (Array.isArray(parsed) && parsed.length > 0) {
-      return parsed[parsed.length - 1];
-    }
-  } catch {
-    // If parsing fails, treat as regular string
-  }
-  return fieldPath;
-}
+import {extractFieldName} from '@/plugins/extract-field-name';
 
 export function lineChartSettingsToTag(settings: LineChartSettings): Tag {
   let tag = new Tag({

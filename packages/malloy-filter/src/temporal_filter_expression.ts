@@ -1,8 +1,6 @@
 /*
- * Copyright (c) Meta Platforms, Inc. and affiliates.
- *
- * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree.
+ * Copyright Contributors to the Malloy project
+ * SPDX-License-Identifier: MIT
  */
 
 import type {
@@ -33,11 +31,16 @@ export const TemporalFilterExpression = {
     switch (tc.operator) {
       case 'null':
         return notStr(tc, 'null');
+      case 'none':
+        return notStr(tc, 'none');
       case 'in': {
         return notStr(tc, momentToStr(tc.in));
       }
       case '()':
-        return '(' + TemporalFilterExpression.unparse(tc.expr) + ')';
+        return notStr(
+          tc,
+          '(' + TemporalFilterExpression.unparse(tc.expr) + ')'
+        );
       case 'in_last':
         return notStr(tc, durStr(tc));
       case 'last':

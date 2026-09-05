@@ -1,8 +1,6 @@
 /*
- * Copyright (c) Meta Platforms, Inc. and affiliates.
- *
- * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree.
+ * Copyright Contributors to the Malloy project
+ * SPDX-License-Identifier: MIT
  */
 
 import type {BinaryOperator} from '../../../model';
@@ -11,15 +9,9 @@ export type LogicalMalloyOperator = 'and' | 'or';
 export type ArithmeticMalloyOperator = '+' | '-' | '*' | '/' | '%';
 export type EqualityMalloyOperator = '~' | '!~' | '=' | '!=';
 export type CompareMalloyOperator =
-  | '<'
-  | '<='
-  | '>'
-  | '>='
-  | EqualityMalloyOperator;
+  '<' | '<=' | '>' | '>=' | EqualityMalloyOperator;
 export type BinaryMalloyOperator =
-  | ArithmeticMalloyOperator
-  | CompareMalloyOperator
-  | LogicalMalloyOperator;
+  ArithmeticMalloyOperator | CompareMalloyOperator | LogicalMalloyOperator;
 
 export function getExprNode(mo: BinaryMalloyOperator): BinaryOperator {
   switch (mo) {

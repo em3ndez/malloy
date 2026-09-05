@@ -1,8 +1,6 @@
 /*
- * Copyright (c) Meta Platforms, Inc. and affiliates.
- *
- * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree.
+ * Copyright Contributors to the Malloy project
+ * SPDX-License-Identifier: MIT
  */
 
 import {ParserRuleContext} from 'antlr4ts';
@@ -36,7 +34,7 @@ import {
   LiteralYear,
 } from './ast';
 
-type HasAnnotations = ParserRuleContext & {
+type AnnotatedCtx = ParserRuleContext & {
   annotation: () => parse.AnnotationContext[];
 };
 
@@ -114,12 +112,10 @@ export class MalloyToQuery
    * @param cx Any parse context which has an annotation* rule
    * @returns Array of texts for the annotations
    */
-  protected getAnnotations(
-    cx: HasAnnotations
-  ): Malloy.Annotation[] | undefined {
-    const annotations = cx.annotation().map(a => {
-      return {value: getAnnotationText(a)};
-    });
+  protected getAnnotations(cx: AnnotatedCtx): Malloy.Annotation[] | undefined {
+    const annotations = cx.annotation().map(a => ({
+      value: getAnnotationText(a),
+    }));
     return annotations.length > 0 ? annotations : undefined;
   }
 
@@ -389,17 +385,22 @@ export class MalloyToQuery
     for (const spec of specs) {
       if (spec.INTEGER_LITERAL()) {
         this.notAllowed(spec, 'Indexed order by statements');
-      } else if (spec.fieldName()) {
-        const fieldName = getId(spec.fieldName()!);
-        const direction = spec.ASC() ? 'asc' : spec.DESC() ? 'desc' : undefined;
-        orders.push({
-          kind: 'order_by',
-          direction,
-          field_reference: {name: fieldName},
-        });
-      } else {
+        continue;
+      }
+      // A valid order_by target is a single ordinary name; a dotted path or a
+      // bare reserved word is not representable as a stable query.
+      const words = spec.possibleBadPath()?.badWord() ?? [];
+      const firstField = words.length === 1 ? words[0].fieldName() : undefined;
+      if (!firstField) {
         return null;
       }
+      const fieldName = getId(firstField);
+      const direction = spec.ASC() ? 'asc' : spec.DESC() ? 'desc' : undefined;
+      orders.push({
+        kind: 'order_by',
+        direction,
+        field_reference: {name: fieldName},
+      });
     }
     return orders;
   }

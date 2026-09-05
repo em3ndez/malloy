@@ -1,25 +1,6 @@
 /*
- * Copyright 2023 Google LLC
- * Copyright (c) Meta Platforms, Inc. and affiliates.
- *
- * Permission is hereby granted, free of charge, to any person obtaining
- * a copy of this software and associated documentation files
- * (the "Software"), to deal in the Software without restriction,
- * including without limitation the rights to use, copy, modify, merge,
- * publish, distribute, sublicense, and/or sell copies of the Software,
- * and to permit persons to whom the Software is furnished to do so,
- * subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be
- * included in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
- * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
- * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
- * IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
- * CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
- * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
- * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ * Copyright Contributors to the Malloy project
+ * SPDX-License-Identifier: MIT
  */
 
 import type * as Malloy from '@malloydata/malloy-interfaces';
@@ -192,12 +173,7 @@ export interface FilteredExpr extends ExprWithKids {
 }
 
 export type AggregateFunctionType =
-  | 'sum'
-  | 'avg'
-  | 'count'
-  | 'distinct'
-  | 'max'
-  | 'min';
+  'sum' | 'avg' | 'count' | 'distinct' | 'max' | 'min';
 
 export interface AggregateExpr extends ExprE {
   node: 'aggregate';
@@ -358,12 +334,7 @@ export interface RegexMatchExpr extends ExprWithKids {
 }
 
 export type FilterExprType =
-  | 'string'
-  | 'number'
-  | 'boolean'
-  | 'date'
-  | 'timestamp'
-  | 'timestamptz';
+  'string' | 'number' | 'boolean' | 'date' | 'timestamp' | 'timestamptz';
 export function isFilterExprType(s: string): s is FilterExprType {
   return [
     'string',
@@ -408,9 +379,7 @@ export interface TimestamptzLiteralNode extends ExprLeaf {
 }
 
 export type TimeLiteralExpr =
-  | DateLiteralNode
-  | TimestampLiteralNode
-  | TimestamptzLiteralNode;
+  DateLiteralNode | TimestampLiteralNode | TimestamptzLiteralNode;
 
 export function isTimeLiteral(e: Expr): e is TimeLiteralExpr {
   return (
@@ -565,13 +534,13 @@ export type Argument = Parameter;
  * Type of a given declaration. The grammar's `malloyType` already excludes
  * `json` and `sql native`, so any value of this union is a legal given type.
  *
- * The fully-narrowed recursive form described in `~/ctx/mp/implementation.md`
- * (a fresh union over a smaller atomic base) lands with the IR work; the
- * shape here is the conservative "not yet narrowed" version.
+ * The fully-narrowed recursive form (a fresh union over a smaller atomic
+ * base) lands with the IR work; the shape here is the conservative
+ * "not yet narrowed" version.
  */
 export type GivenTypeDef = AtomicTypeDef | FilterExpressionParamTypeDef;
 
-export interface Given extends HasLocation, HasAnnotation {
+export interface Given extends HasLocation, HasAnnotations {
   /** The name as written at the declaration site. Used by diagnostics
    *  that need a readable surface name out of an opaque GivenID. */
   name: string;
@@ -641,7 +610,7 @@ export interface DocumentLocation {
  * the references, and in that case, this should include something like an
  * index or pointer to the full definition elsewhere in the model.
  */
-export interface LightweightDefinition extends HasLocation, HasAnnotation {
+export interface LightweightDefinition extends HasLocation, HasAnnotations {
   type: string;
 }
 
@@ -698,14 +667,24 @@ export interface HasLocation {
   location?: DocumentLocation;
 }
 
-export interface HasAnnotation {
-  annotation?: Annotation;
+export interface HasAnnotations {
+  annotations?: AnnotationsDef;
 }
 
 /** All names have their source names and how they will appear in the symbol table that owns them */
 export interface AliasedName {
   name: string;
   as?: string;
+}
+
+/**
+ * The name an `AliasedName` goes by in its current context: its `as` binding
+ * if it has one, otherwise its intrinsic `name`. This is the only correct way
+ * to ask "what is this called here" — see the `name`/`as` invariant in
+ * model/CONTEXT.md.
+ */
+export function activeName(an: AliasedName): string {
+  return an.as ?? an.name;
 }
 
 /** all named objects have a type an a name (optionally aliased) */
@@ -887,7 +866,7 @@ export function canOrderBy(s: string) {
  */
 
 export interface FieldBase
-  extends NamedObject, Expression, ResultMetadata, HasAnnotation {
+  extends NamedObject, Expression, ResultMetadata, HasAnnotations {
   accessModifier?: NonDefaultAccessModifierLabel | undefined;
   requiresGroupBy?: RequiredGroupBy[];
   ungroupings?: AggregateUngrouping[];
@@ -1099,10 +1078,7 @@ export type ErrorFieldDef = ErrorTypeDef & AtomicFieldDef;
 
 export type JoinType = 'one' | 'many' | 'cross';
 export type JoinRelationship =
-  | 'one_to_one'
-  | 'one_to_many'
-  | 'many_to_one'
-  | 'many_to_many';
+  'one_to_one' | 'one_to_many' | 'many_to_one' | 'many_to_many';
 
 export type MatrixOperation = 'left' | 'right' | 'full' | 'inner';
 
@@ -1220,8 +1196,7 @@ export interface FunctionOrderByDefaultExpression extends ExprLeaf {
 }
 
 export type FunctionOrderBy =
-  | FunctionOrderByExpression
-  | FunctionOrderByDefaultExpression;
+  FunctionOrderByExpression | FunctionOrderByDefaultExpression;
 
 /** reference to a data source */
 // TODO this should be renamed to `SourceRef`
@@ -1245,15 +1220,14 @@ export interface Filtered {
 export interface TurtleSegment extends Filtered {
   name: string;
 }
-export interface Pipeline {
+export interface Pipeline extends HasAnnotations, HasLocation {
   pipeline: PipeSegment[];
 }
-export interface Query extends Pipeline, Filtered, HasLocation, HasAnnotation {
+export interface Query extends Pipeline, Filtered {
   type?: 'query';
   name?: string;
   structRef: StructRef;
   sourceArguments?: SafeRecord<Argument>;
-  modelAnnotation?: Annotation;
   compositeResolvedSourceDef?: SourceDef;
   // Dedup'd union of every segment's `expandedGivenUsage` (and nested turtle
   // stages'). Populated when the Query is finalized; consumers that need the
@@ -1480,27 +1454,6 @@ export function mapFieldUsage(
   return rs && {...rs, fieldUsage: rs.fieldUsage.map(fn)};
 }
 
-/**
- * Mutating setter for a node's `fieldUsage`. When the node already has a
- * `refSummary`, replaces just the `fieldUsage` slice (preserving `givenUsage`
- * and any future RefSummary fields). When it doesn't, creates a fresh
- * `refSummary` with the supplied usages.
- *
- * Use at sites that mutate an already-constructed IR node; for sites that
- * build a node from a literal, write `{fieldUsage: [...]}` directly or use
- * `mkRefSummary` for possibly-undefined inputs.
- */
-export function setFieldUsage(
-  target: {refSummary?: RefSummary},
-  usages: FieldUsage
-): void {
-  if (target.refSummary) {
-    target.refSummary.fieldUsage = usages;
-  } else {
-    target.refSummary = {fieldUsage: usages};
-  }
-}
-
 export interface QuerySegment extends Filtered, Ordered, SegmentUsageSummary {
   type: 'reduce' | 'project' | 'partial';
   queryFields: QueryFieldDef[];
@@ -1517,7 +1470,7 @@ export interface QuerySegment extends Filtered, Ordered, SegmentUsageSummary {
 export type NonDefaultAccessModifierLabel = 'private' | 'internal';
 export type AccessModifierLabel = NonDefaultAccessModifierLabel | 'public';
 
-export interface TurtleDef extends NamedObject, Pipeline, HasAnnotation {
+export interface TurtleDef extends NamedObject, Pipeline {
   type: 'turtle';
   accessModifier?: NonDefaultAccessModifierLabel | undefined;
   refSummary?: RefSummary;
@@ -1526,9 +1479,8 @@ export interface TurtleDef extends NamedObject, Pipeline, HasAnnotation {
 
 export interface TurtleDefPlusFilters extends TurtleDef, Filtered {}
 
-interface StructDefBase extends HasLocation, NamedObject, HasAnnotation {
+interface StructDefBase extends HasLocation, NamedObject, HasAnnotations {
   type: string;
-  modelAnnotation?: ModelAnnotation;
   fields: FieldDef[];
   /** Marker for error placeholder structs created by ErrorFactory */
   errorFactory?: boolean;
@@ -1548,6 +1500,22 @@ interface SourceDefBase extends StructDefBase, Filtered, ResultStructMetadata {
   primaryKey?: PrimaryKeyRef;
   dialect: string;
   partitionComposite?: PartitionCompositeDesc;
+  /**
+   * Identity of this source's own definition (`name@modelURL`). Set for every
+   * source when it is defined. The persistence machinery reads this (gated by
+   * `isPersistableSourceDef`).
+   */
+  sourceID?: SourceID;
+  /**
+   * Set only when this source was created as an unmodified reference to another
+   * source (`source: a is b`, or a plain join) — then it holds the `sourceID`
+   * of the *immediately* referenced source. Absent when the source defines its
+   * own shape (table/sql/query, or a modified/extended source). So
+   * `referenceID !== undefined` means "created as a reference", and the value
+   * resolves through `ModelDef.sourceRegistry` to the referenced source and its
+   * namespace name (see `sourceNamespaceReference`).
+   */
+  referenceID?: SourceID;
 }
 /** which field is the primary key in this struct */
 export type PrimaryKeyRef = string;
@@ -1586,7 +1554,7 @@ export function isSegmentSource(
   return 'type' in f && (f.type === 'sql_select' || f.type === 'query_source');
 }
 
-/** Format: "name@modelUrl" - uniquely identifies a source for persistence */
+/** Format: "name@modelUrl" - uniquely identifies a defined source */
 export type SourceID = string;
 
 /** Created with `mkGivenID`. */
@@ -1594,6 +1562,14 @@ export type GivenID = string;
 
 /** Hash of (connectionDigest, sql) - uniquely identifies a built artifact */
 export type BuildID = string;
+
+/**
+ * Identifies the model a definition came from. Either a real model URL or a
+ * synthetic `"internal <uuid>"` for URL-less models. The space makes the
+ * synthetic form an illegal URL, so it can never collide with a real model
+ * URL. Created with `mkModelID`.
+ */
+export type ModelID = string;
 
 /**
  * Reference to a source in modelDef.contents by name.
@@ -1610,8 +1586,7 @@ export interface SourceRegistryReference {
  * - PersistableSourceDef: source is not in namespace (hidden dependency), stored directly
  */
 export type SourceRegistryEntry =
-  | SourceRegistryReference
-  | PersistableSourceDef;
+  SourceRegistryReference | PersistableSourceDef;
 
 /**
  * Value in the sourceRegistry, wrapping the entry with persistence info.
@@ -1629,7 +1604,6 @@ export function isSourceRegistryReference(
 }
 
 export interface PersistableSourceProperties {
-  sourceID?: SourceID;
   extends?: SourceID;
   persistent?: boolean;
 }
@@ -1686,13 +1660,17 @@ export function isSourceDef(sd: NamedModelObject | FieldDef): sd is SourceDef {
 /**
  * Union of all source definition types.
  *
- * IMPORTANT: Never use object spread to copy a SourceDef. Use the factory
- * methods in source_def_utils.ts to merge changes into a source def:
+ * When building a *persisted/derived* source in the compiler, use the factory
+ * methods in source_def_utils.ts rather than object spread:
  * - mkSQLSourceDef(base, ...) - create SQLSourceDef from base
  * - mkQuerySourceDef(base, ...) - create QuerySourceDef from base
  *
- * These factories explicitly copy only safe fields, preventing accidental
- * propagation of sourceID/extends which must only be set in DefineSource.
+ * These factories explicitly copy only safe fields, dropping the identity
+ * fields (sourceID/referenceID/extends/persistent) so they are not propagated
+ * onto a freshly built source. In the translator, by contrast, object spread is
+ * used deliberately to *carry* sourceID/referenceID through an unmodified
+ * reference; DefineSource then sets them, and DynamicSpace clears referenceID
+ * on the modification path.
  */
 export type SourceDef =
   | TableSourceDef
@@ -1757,9 +1735,7 @@ export interface NonAtomicTypeDef {
 
 export type ExpressionValueType = AtomicFieldType | NonAtomicType | TurtleType;
 export type ExpressionValueTypeDef =
-  | AtomicTypeDef
-  | NonAtomicTypeDef
-  | TurtleTypeDef;
+  AtomicTypeDef | NonAtomicTypeDef | TurtleTypeDef;
 export type BasicExpressionType = Exclude<
   ExpressionValueType,
   JoinElementType | 'turtle'
@@ -1945,9 +1921,7 @@ export interface ConnectionDef extends NamedObject {
 }
 
 export type TemporalTypeDef =
-  | DateTypeDef
-  | TimestampTypeDef
-  | TimestamptzTypeDef;
+  DateTypeDef | TimestampTypeDef | TimestamptzTypeDef;
 export type BasicAtomicTypeDef =
   | StringTypeDef
   | TemporalTypeDef
@@ -1964,10 +1938,7 @@ export type AtomicTypeDef =
   | RecordTypeDef
   | RepeatedRecordTypeDef;
 export type AtomicFieldDef =
-  | BasicAtomicDef
-  | BasicArrayDef
-  | RecordDef
-  | RepeatedRecordDef;
+  BasicAtomicDef | BasicArrayDef | RecordDef | RepeatedRecordDef;
 
 export function isBasicAtomic(
   fd: FieldDef | QueryFieldDef | AtomicTypeDef
@@ -1989,7 +1960,7 @@ export type FieldDefType = AtomicFieldType | 'turtle' | JoinElementType;
 
 // Queries have fields like this ..
 
-export interface RefToField extends HasAnnotation {
+export interface RefToField extends HasAnnotations {
   type: 'fieldref';
   path: string[];
   at?: DocumentLocation;
@@ -1999,26 +1970,14 @@ export type QueryFieldDef = AtomicFieldDef | TurtleDef | RefToField;
 
 // All these share the same "type" space
 export type TypedDef =
-  | AtomicTypeDef
-  | JoinFieldDef
-  | TurtleDef
-  | RefToField
-  | StructDef;
+  AtomicTypeDef | JoinFieldDef | TurtleDef | RefToField | StructDef;
 
-/** Get the output name for a NamedObject */
-export function getIdentifier(n: AliasedName): string {
-  if (n.as !== undefined) {
-    return n.as;
-  }
-  return n.name;
-}
-
-export interface UserTypeFieldDef extends HasAnnotation {
+export interface UserTypeFieldDef extends HasAnnotations {
   name: string;
   typeDef: AtomicTypeDef;
 }
 
-export interface UserTypeDef extends NamedObject, HasAnnotation {
+export interface UserTypeDef extends NamedObject, HasAnnotations {
   type: 'userType';
   fields: UserTypeFieldDef[];
 }
@@ -2042,6 +2001,7 @@ export interface DependencyTree {
 /** Result of parsing a model file */
 export interface ModelDef {
   name: string;
+  modelID: ModelID;
   exports: string[];
   contents: SafeRecord<NamedModelObject>;
   /**
@@ -2052,7 +2012,17 @@ export interface ModelDef {
    */
   sourceRegistry: Record<SourceID, SourceRegistryValue>;
   givens?: Record<GivenID, Given>;
-  annotation?: ModelAnnotation;
+  /**
+   * Model (`##`) annotations of every model involved in this compile, keyed by
+   * {@link ModelID} — this model plus everything it imported or extended (the
+   * whole closure, so any model's annotations are answerable from this
+   * `ModelDef` alone, even after it crosses the wire). Each entry carries that
+   * model's own `##` (`ownNotes`) and its direct import/extend predecessors
+   * (`inheritsFrom`, the DAG of edges, extend-base prepended as `import₀`).
+   * {@link getModelAnnotations} folds `inheritsFrom` from any model to produce
+   * that model's deduped, ordered annotation set.
+   */
+  modelAnnotations: Record<ModelID, ModelAnnotationEntry>;
   queryList: Query[];
   dependencies: DependencyTree;
   references?: DocumentReference[];
@@ -2063,29 +2033,47 @@ export interface ModelDef {
 export type NamedSourceDefs = SafeRecord<SourceDef>;
 export type NamedModelObjects = SafeRecord<NamedModelObject>;
 
-/** Malloy source annotations attached to objects */
-export interface Annotation {
-  inherits?: Annotation;
+/** Bundle of source annotations attached to one object: the `notes` and
+ *  `blockNotes` written on it, plus the bundle from the spiritual parent
+ *  via `inherits`. The IR shape paired with the `Annotations` view class.
+ *
+ *  This is the one annotation bundle type for both `#` object annotations (on
+ *  fields, views, sources, queries, …) and `##` model annotations. Object
+ *  annotations carry no model provenance: `##` is model-level, resolved by
+ *  folding {@link ModelDef.modelAnnotations} keyed by {@link ModelID}, not by
+ *  per-object stamping. A model's own `##` is just an `AnnotationsDef` whose
+ *  `inherits` chain is unused as stored (`ModelAnnotationEntry.ownNotes`) and,
+ *  when returned by {@link getModelAnnotations}, *is* the folded order (local at the
+ *  top) so the `Annotations` view / `notesInOrder` read it with no new code. */
+export interface AnnotationsDef {
+  inherits?: AnnotationsDef;
   blockNotes?: Note[];
   notes?: Note[];
 }
 export interface Note {
   text: string;
   at: DocumentLocation;
+  /**
+   * For multi-line annotations (`#|`…`|#`): characters of leading whitespace
+   * removed from each body line by the dedent pass. Used to map
+   * payload-parser error columns back to source
+   * (`source_col = indentStripped + parser_col` for body lines). Omitted for
+   * single-line annotations and for multi-line annotations with no common
+   * indent.
+   */
+  indentStripped?: number;
 }
-/** Annotations with a uuid to make it easier to stream */
-export interface ModelAnnotation extends Annotation {
-  id: string;
+/** One model's entry in {@link ModelDef.modelAnnotations}: its own `##`
+ *  (`ownNotes`) plus its **direct** import/extend predecessors (`inheritsFrom`),
+ *  in fold order with the extend-base prepended as `import₀`. Direct edges only
+ *  — the lineage DAG, not the resolved order; {@link getModelAnnotations} resolves. */
+export interface ModelAnnotationEntry {
+  ownNotes: AnnotationsDef;
+  inheritsFrom: ModelID[];
 }
 
 export type QueryScalar =
-  | string
-  | boolean
-  | number
-  | bigint
-  | Date
-  | Buffer
-  | null;
+  string | boolean | number | bigint | Date | Buffer | null;
 
 /** One value in one column of returned data. */
 export type QueryValue = QueryScalar | QueryData | QueryRecord | QueryValue[];
@@ -2124,7 +2112,7 @@ export interface DrillSource {
   sourceArguments?: SafeRecord<Argument>;
 }
 
-export interface CompiledQuery extends DrillSource, HasAnnotation {
+export interface CompiledQuery extends DrillSource, HasAnnotations {
   structs: SourceDef[];
   sql: string;
   lastStageName: string;

@@ -1,18 +1,16 @@
 /*
- * Copyright (c) Meta Platforms, Inc. and affiliates.
- *
- * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree.
+ * Copyright Contributors to the Malloy project
+ * SPDX-License-Identifier: MIT
  */
 
 import type {
   AccessModifierLabel,
-  Annotation,
+  AnnotationsDef,
   DocumentLocation,
   FieldDef,
   SourceDef,
 } from '../../../model/malloy_types';
-import {isJoined} from '../../../model/malloy_types';
+import {activeName, isJoined} from '../../../model/malloy_types';
 import type {IncludeItem} from '../source-query-elements/include-item';
 import {
   IncludeAccessItem,
@@ -25,7 +23,7 @@ import type {MalloyElement} from '../types/malloy-element';
 
 export interface JoinIncludeProcessingState {
   star: AccessModifierLabel | 'inherit' | 'except' | undefined;
-  starNote: Annotation | undefined;
+  starNote: AnnotationsDef | undefined;
   fieldsIncluded: Set<string>;
   joinNames: Set<string>;
   fieldsExcepted: Set<string>;
@@ -38,7 +36,7 @@ export interface JoinIncludeProcessingState {
     location: DocumentLocation;
   }[];
   fieldsToInclude: Set<string> | undefined;
-  notes: Map<string, Annotation>;
+  notes: Map<string, AnnotationsDef>;
 }
 
 export interface IncludeProcessingState {
@@ -55,7 +53,7 @@ function getJoinFields(
 ): FieldDef[] {
   let fields = from.fields;
   for (const joinName of joinPath) {
-    const join = fields.find(f => (f.as ?? f.name) === joinName);
+    const join = fields.find(f => activeName(f) === joinName);
     if (join === undefined) {
       logTo.logError('field-not-found', `\`${joinName}\` not found`);
       return [];
@@ -100,14 +98,14 @@ function getOrCreateIncludeStateForJoin(
   if (joinState !== undefined) return joinState.state;
   else {
     const fromFields = getJoinFields(from, joinPath, logTo);
-    const allFields = new Set(fromFields.map(f => f.as ?? f.name));
+    const allFields = new Set(fromFields.map(f => activeName(f)));
     const joinNames = new Set(
-      fromFields.filter(f => isJoined(f)).map(f => f.as ?? f.name)
+      fromFields.filter(f => isJoined(f)).map(f => activeName(f))
     );
     const alreadyPrivateFields = new Set(
       fromFields
         .filter(f => f.accessModifier === 'private')
-        .map(f => f.as ?? f.name)
+        .map(f => activeName(f))
     );
     const joinState: JoinIncludeProcessingState = {
       star: undefined,
@@ -195,8 +193,8 @@ export function processIncludeList(
           } else {
             joinState.star = item.kind ?? 'inherit';
             joinState.starNote = {
-              notes: f.note?.notes ?? [],
-              blockNotes: item.note?.blockNotes ?? [],
+              notes: f.ownAnnotation?.notes ?? [],
+              blockNotes: item.ownAnnotation?.blockNotes ?? [],
             };
           }
         } else {
@@ -247,10 +245,10 @@ export function processIncludeList(
               joinState.modifiers.set(f.as ?? name, item.kind);
             }
             joinState.fieldsIncluded.add(name);
-            if (f.note || item.note) {
+            if (f.ownAnnotation || item.ownAnnotation) {
               joinState.notes.set(name, {
-                notes: f.note?.notes ?? [],
-                blockNotes: item.note?.blockNotes ?? [],
+                notes: f.ownAnnotation?.notes ?? [],
+                blockNotes: item.ownAnnotation?.blockNotes ?? [],
               });
             }
           }

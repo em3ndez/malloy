@@ -1,8 +1,6 @@
 /*
- * Copyright (c) Meta Platforms, Inc. and affiliates.
- *
- * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree.
+ * Copyright Contributors to the Malloy project
+ * SPDX-License-Identifier: MIT
  */
 
 import type {RecordLiteralNode} from '../../../model';
@@ -16,8 +14,7 @@ import * as TDU from '../typedesc-utils';
 import type {ExprIdReference} from './expr-id-reference';
 
 export type ElementDetails =
-  | {path: ExprIdReference}
-  | {key?: string; value: ExpressionDef};
+  {path: ExprIdReference} | {key?: string; value: ExpressionDef};
 export class RecordElement extends MalloyElement {
   elementType = 'record element';
   value: ExpressionDef;
@@ -46,7 +43,7 @@ export class RecordLiteral extends ExpressionDef {
     this.has({pairs});
   }
 
-  getExpression(fs: FieldSpace): ExprValue {
+  protected computeExpression(fs: FieldSpace): ExprValue {
     return this.getRecord(fs, []);
   }
 

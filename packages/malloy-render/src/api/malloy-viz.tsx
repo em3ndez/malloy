@@ -1,8 +1,6 @@
 /*
- * Copyright (c) Meta Platforms, Inc. and affiliates.
- *
- * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree.
+ * Copyright Contributors to the Malloy project
+ * SPDX-License-Identifier: MIT
  */
 
 import {render} from 'solid-js/web';
@@ -12,6 +10,7 @@ import type {
   RenderPluginInstance,
 } from '@/api/plugin-types';
 import {MalloyRender} from '@/component/render';
+import {mergeThemeOption} from '@/component/theme';
 import type {MalloyRenderProps} from '@/component/render';
 import type * as Malloy from '@malloydata/malloy-interfaces';
 import {RenderFieldMetadata} from '@/render-field-metadata';
@@ -180,6 +179,7 @@ export class MalloyViz {
       scrollEl: this.options.scrollEl,
       renderFieldMetadata: this.metadata,
       useVegaInterpreter: this.options.useVegaInterpreter,
+      theme: this.options.theme,
       onReady: () => this.handleReady(),
     };
 
@@ -199,7 +199,16 @@ export class MalloyViz {
   }
 
   updateOptions(newOptions: Partial<MalloyRendererOptions>): void {
-    this.options = {...this.options, ...newOptions};
+    // Shallow-merge every option key, but special-case `theme` so a
+    // partial theme update (e.g. `{ theme: { mapColor: '#f00' } }`)
+    // doesn't wipe the rest of the previously-set theme keys. Passing
+    // `theme: undefined` explicitly still clears the theme.
+    const mergedTheme = mergeThemeOption(
+      this.options.theme,
+      'theme' in newOptions,
+      newOptions.theme
+    );
+    this.options = {...this.options, ...newOptions, theme: mergedTheme};
   }
 
   getMetadata(): RenderFieldMetadata | null {

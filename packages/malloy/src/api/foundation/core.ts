@@ -19,6 +19,7 @@ import type {
   GivenID,
   GivenTypeDef,
   Query as InternalQuery,
+  Pipeline,
   ModelDef,
   DocumentPosition as ModelDocumentPosition,
   NamedQueryDef,
@@ -26,7 +27,9 @@ import type {
   TurtleDef,
   NativeUnsupportedFieldDef,
   ImportLocation,
-  Annotation,
+  AnnotationsDef,
+  ModelAnnotationEntry,
+  ModelID,
   NamedModelObject,
   SQLSourceDef,
   AtomicFieldDef,
@@ -42,6 +45,7 @@ import type {
   PrepareResultOptions,
 } from '../../model';
 import {
+  activeName,
   fieldIsIntrinsic,
   QueryModel,
   expressionIsCalculation,
@@ -51,34 +55,42 @@ import {
   isRecordOrRepeatedRecord,
   isPersistableSourceDef,
   getCompiledSQL,
+  getModelAnnotations,
   safeRecordGet,
 } from '../../model';
 import {mkModelDef} from '../../model/utils';
 import type {Dialect} from '../../dialect';
 import {getDialect} from '../../dialect';
 import type {BuildGraph, BuildNode, CompileQueryOptions} from './types';
+import type {PersistWalk} from '../../model/persist_utils';
 import {
   findPersistentDependencies,
   minimalBuildGraph,
+  walkPersistentDependencies,
 } from '../../model/persist_utils';
-import {resolveSourceID, mkBuildID} from '../../model/source_def_utils';
+import {
+  resolveSourceID,
+  sourceNamespaceReference,
+  mkBuildID,
+} from '../../model/source_def_utils';
 import {
   evaluateInlineGivens,
   resolveSuppliedGivens,
 } from '../../model/given_binding';
 import {Tag} from '@malloydata/malloy-tag';
-import type {MalloyTagParse, TagParseSpec} from '../../annotation';
-import {annotationToTag, annotationToTaglines} from '../../annotation';
+import type {MalloyTagParse, TagParseSpec} from './annotation';
+import {annotationToTag, annotationToTaglines, Annotations} from './annotation';
 import type * as Malloy from '@malloydata/malloy-interfaces';
 import {
   convertFieldInfos,
   getResultStructMetadataAnnotation,
+  toStableAnnotations,
   writeLiteralToTag,
 } from '../../to_stable';
 import {nodeToLiteralValue} from '../util';
 import {locationContainsPosition} from '../../lang/utils';
 import {ReferenceList} from '../../lang/reference-list';
-import type {Taggable} from '../../taggable';
+import type {Taggable} from './taggable';
 
 type ComponentSourceDef = TableSourceDef | SQLSourceDef | QuerySourceDef;
 function isSourceComponent(source: StructDef): source is ComponentSourceDef {
@@ -87,6 +99,37 @@ function isSourceComponent(source: StructDef): source is ComponentSourceDef {
     source.type === 'sql_select' ||
     source.type === 'query_source'
   );
+}
+
+/**
+ * A synthetic single-source model for an `Explore` that has no real model in
+ * hand — the deserialization (`Explore.fromJSON`) and raw-SQL-block paths.
+ * Wraps just the one struct so SQL generation has something to compile
+ * against.
+ *
+ * `modelID` + `modelAnnotations` reconstitute the model-annotation closure:
+ * `fromJSON` passes the values captured by `toJSON` so a deserialized Explore
+ * folds its model annotations exactly as the live one did. The raw-SQL-block
+ * and default paths pass nothing and get an empty map (the honest answer for a
+ * genuinely detached struct). The default constant `modelID` (rather than
+ * `mkModelDef`'s random one) keeps `fromJSON(x.toJSON())` deep-equal to `x` for
+ * the no-annotations case.
+ */
+const GENERATED_MODEL_ID = 'internal://generated-model';
+export function pseudoModelFor(
+  structDef: StructDef,
+  modelID: ModelID = GENERATED_MODEL_ID,
+  modelAnnotations: Record<ModelID, ModelAnnotationEntry> = {}
+): ModelDef {
+  if (!isSourceDef(structDef)) {
+    throw new Error(
+      `Cannot create pseudo model for struct type ${structDef.type}`
+    );
+  }
+  const def = mkModelDef('generated_model', modelID);
+  def.modelAnnotations = modelAnnotations;
+  def.contents[structDef.name] = structDef;
+  return def;
 }
 
 // =============================================================================
@@ -222,6 +265,10 @@ export type Field = AtomicField | QueryField | ExploreField;
 
 export type SerializedExplore = {
   _structDef: StructDef;
+  /** Owner model id + annotation closure, so a deserialized Explore folds
+   *  model annotations as the live one did. */
+  modelID: ModelID;
+  modelAnnotations: Record<ModelID, ModelAnnotationEntry>;
   sourceExplore?: SerializedExplore;
   _parentExplore?: SerializedExplore;
 };
@@ -233,6 +280,17 @@ export type PreparedResultJSON = {
   modelDef: ModelDef;
 };
 
+/**
+ * Identifier-only enumeration of a model's top-level queries.
+ * Internal: returned by `Model.queries()`, not exported. Callers pair
+ * the names with `getPreparedQueryByName` and the indices `0..unnamed-1`
+ * with `getPreparedQueryByIndex` to load any one of them.
+ */
+interface ModelQueries {
+  named: string[];
+  unnamed: number;
+}
+
 // =============================================================================
 // Explore
 // =============================================================================
@@ -240,19 +298,65 @@ export type PreparedResultJSON = {
 export class Explore extends Entity implements Taggable {
   protected readonly _structDef: StructDef;
   protected readonly _parentExplore?: Explore;
+  private readonly _ownerModelDef: ModelDef;
   private _fieldMap: Map<string, Field> | undefined;
   private sourceExplore: Explore | undefined;
   private _allFieldsWithOrder: SortableField[] | undefined;
 
-  constructor(structDef: StructDef, parentExplore?: Explore, source?: Explore) {
-    super(structDef.as || structDef.name, parentExplore, source);
+  constructor(
+    modelDef: ModelDef,
+    structDef: StructDef,
+    parentExplore?: Explore,
+    source?: Explore
+  ) {
+    super(activeName(structDef), parentExplore, source);
+    this._ownerModelDef = modelDef;
     this._structDef = structDef;
     this._parentExplore = parentExplore;
     this.sourceExplore = source;
   }
 
+  /** The model this Explore was resolved in. For detached Explores
+   *  (`fromJSON`, raw SQL block) this is a synthetic single-source model
+   *  with no model annotations. Read by child fields to resolve their own
+   *  model annotations. */
+  public get _modelDef(): ModelDef {
+    return this._ownerModelDef;
+  }
+
   public get source(): Explore | undefined {
     return this.sourceExplore;
+  }
+
+  /**
+   * THIS IS A HIGHLY EXPERIMENTAL API AND MAY VANISH OR CHANGE WITHOUT NOTICE
+   *
+   * If this source was created as an unmodified reference to another source, a
+   * stable identifier of the source it refers to; undefined when this source
+   * defines its own shape. Two sources that refer to the same thing share this
+   * id, so it can be compared to tell whether two otherwise un-nameable sources
+   * are the same — even when the referenced source can't be named here.
+   */
+  public get referenceSourceID(): string | undefined {
+    return isSourceDef(this._structDef)
+      ? this._structDef.referenceID
+      : undefined;
+  }
+
+  /**
+   * THIS IS A HIGHLY EXPERIMENTAL API AND MAY VANISH OR CHANGE WITHOUT NOTICE
+   *
+   * If this source was created as an unmodified reference to a source that is in
+   * this model's namespace (`source: a is b`, or a plain join), return that
+   * source as it appears in the namespace — read `.name` for the name it goes by
+   * here. Returns undefined when this source defines its own shape (a table,
+   * SQL, query, or modified/extended source), or when the referenced source is
+   * not in this model's namespace.
+   */
+  public referencedSource(): Explore | undefined {
+    if (!isSourceDef(this._structDef)) return undefined;
+    const ref = sourceNamespaceReference(this._ownerModelDef, this._structDef);
+    return ref ? new Explore(this._ownerModelDef, ref.source) : undefined;
   }
 
   public isIntrinsic(): boolean {
@@ -266,19 +370,31 @@ export class Explore extends Entity implements Taggable {
     return false;
   }
 
+  /** @deprecated Use `.annotations.parseAsTag(route)`. */
   tagParse(spec?: TagParseSpec): MalloyTagParse {
-    return annotationToTag(this._structDef.annotation, spec);
+    return annotationToTag(this._structDef.annotations, spec);
   }
 
+  /** @deprecated Use `.annotations.texts(route)`. */
   getTaglines(prefix?: RegExp): string[] {
-    return annotationToTaglines(this._structDef.annotation, prefix);
+    return annotationToTaglines(this._structDef.annotations, prefix);
+  }
+
+  get annotations(): Annotations {
+    return new Annotations(this._structDef.annotations);
+  }
+
+  /** The model annotations resolved for this object. */
+  get modelAnnotations(): Annotations {
+    return new Annotations(getModelAnnotations(this._ownerModelDef));
   }
 
   private parsedModelTag?: Tag;
+  /**
+   * @deprecated Use `.modelAnnotations.parseAsTag(route)`.
+   */
   public get modelTag(): Tag {
-    this.parsedModelTag ||= annotationToTag(
-      this._structDef.modelAnnotation
-    ).tag;
+    this.parsedModelTag ||= this.modelAnnotations.parseAsTag().tag;
     return this.parsedModelTag;
   }
 
@@ -286,7 +402,7 @@ export class Explore extends Entity implements Taggable {
    * @return The name of the entity.
    */
   public get name(): string {
-    return this.structDef.as || this.structDef.name;
+    return activeName(this.structDef);
   }
 
   public getQueryByName(name: string): PreparedQuery {
@@ -296,7 +412,7 @@ export class Explore extends Entity implements Taggable {
         `Cannot get query by name from a struct of type ${this.structDef.type}`
       );
     }
-    const view = structRef.fields.find(f => (f.as ?? f.name) === name);
+    const view = structRef.fields.find(f => activeName(f) === name);
     if (view === undefined) {
       throw new Error(`No such view named \`${name}\``);
     }
@@ -316,19 +432,8 @@ export class Explore extends Entity implements Taggable {
     );
   }
 
-  private get modelDef(): ModelDef {
-    if (!isSourceDef(this.structDef)) {
-      throw new Error(
-        `Cannot create pseudo model for struct type ${this.structDef.type}`
-      );
-    }
-    const def = mkModelDef('generated_model');
-    def.contents[this.structDef.name] = this.structDef;
-    return def;
-  }
-
   public getSingleExploreModel(): Model {
-    return new Model(this.modelDef, [], []);
+    return new Model(this._ownerModelDef, [], []);
   }
 
   private get fieldMap(): Map<string, Field> {
@@ -336,7 +441,7 @@ export class Explore extends Entity implements Taggable {
       const sourceFields = this.source?.fieldMap || new Map();
       this._fieldMap = new Map(
         this.structDef.fields.map(fieldDef => {
-          const name = fieldDef.as || fieldDef.name;
+          const name = activeName(fieldDef);
           const sourceField = sourceFields.get(fieldDef.name);
           if (isJoined(fieldDef)) {
             return [name, new ExploreField(fieldDef, this, sourceField)];
@@ -482,6 +587,8 @@ export class Explore extends Entity implements Taggable {
   public toJSON(): SerializedExplore {
     return {
       _structDef: this._structDef,
+      modelID: this._ownerModelDef.modelID,
+      modelAnnotations: this._ownerModelDef.modelAnnotations,
       sourceExplore: this.sourceExplore?.toJSON(),
       _parentExplore: this._parentExplore?.toJSON(),
     };
@@ -496,7 +603,16 @@ export class Explore extends Entity implements Taggable {
       main_explore.sourceExplore !== undefined
         ? Explore.fromJSON(main_explore.sourceExplore)
         : undefined;
-    return new Explore(main_explore._structDef, parentExplore, sourceExplore);
+    return new Explore(
+      pseudoModelFor(
+        main_explore._structDef,
+        main_explore.modelID,
+        main_explore.modelAnnotations
+      ),
+      main_explore._structDef,
+      parentExplore,
+      sourceExplore
+    );
   }
 
   public get location(): DocumentLocation | undefined {
@@ -598,7 +714,7 @@ export class AtomicField extends Entity implements Taggable {
     parent: Explore,
     source?: AtomicField
   ) {
-    super(fieldTypeDef.as || fieldTypeDef.name, parent, source);
+    super(activeName(fieldTypeDef), parent, source);
     this.fieldTypeDef = fieldTypeDef;
     this.parent = parent;
   }
@@ -633,12 +749,23 @@ export class AtomicField extends Entity implements Taggable {
     }
   }
 
+  /** @deprecated Use `.annotations.parseAsTag(route)`. */
   tagParse(spec?: TagParseSpec) {
-    return annotationToTag(this.fieldTypeDef.annotation, spec);
+    return annotationToTag(this.fieldTypeDef.annotations, spec);
   }
 
+  /** @deprecated Use `.annotations.texts(route)`. */
   getTaglines(prefix?: RegExp) {
-    return annotationToTaglines(this.fieldTypeDef.annotation, prefix);
+    return annotationToTaglines(this.fieldTypeDef.annotations, prefix);
+  }
+
+  get annotations(): Annotations {
+    return new Annotations(this.fieldTypeDef.annotations);
+  }
+
+  /** The model annotations resolved for this field, via its parent. */
+  get modelAnnotations(): Annotations {
+    return new Annotations(getModelAnnotations(this.parent._modelDef));
   }
 
   public isIntrinsic(): boolean {
@@ -874,12 +1001,12 @@ export class StringField extends AtomicField {
 // Query and QueryField
 // =============================================================================
 
-export class Query extends Entity {
+export class Query extends Entity implements Taggable {
   protected turtleDef: TurtleDef;
   private sourceQuery?: Query;
 
   constructor(turtleDef: TurtleDef, parent?: Explore, source?: Query) {
-    super(turtleDef.as || turtleDef.name, parent, source);
+    super(activeName(turtleDef), parent, source);
     this.turtleDef = turtleDef;
   }
 
@@ -894,22 +1021,35 @@ export class Query extends Entity {
   public get location(): DocumentLocation | undefined {
     return this.turtleDef.location;
   }
+
+  /** @deprecated Use `.annotations.parseAsTag(route)`. */
+  tagParse(spec?: TagParseSpec) {
+    return annotationToTag(this.turtleDef.annotations, spec);
+  }
+
+  /** @deprecated Use `.annotations.texts(route)`. */
+  getTaglines(prefix?: RegExp) {
+    return annotationToTaglines(this.turtleDef.annotations, prefix);
+  }
+
+  get annotations(): Annotations {
+    return new Annotations(this.turtleDef.annotations);
+  }
+
+  /** The model annotations resolved for this view, via its parent
+   *  explore. A bare `Query` with no parent has none. */
+  get modelAnnotations(): Annotations {
+    const modelDef = this._parent?._modelDef;
+    return new Annotations(modelDef && getModelAnnotations(modelDef));
+  }
 }
 
-export class QueryField extends Query implements Taggable {
+export class QueryField extends Query {
   protected parent: Explore;
 
   constructor(turtleDef: TurtleDef, parent: Explore, source?: Query) {
     super(turtleDef, parent, source);
     this.parent = parent;
-  }
-
-  tagParse(spec?: TagParseSpec) {
-    return annotationToTag(this.turtleDef.annotation, spec);
-  }
-
-  getTaglines(prefix?: RegExp) {
-    return annotationToTaglines(this.turtleDef.annotation, prefix);
   }
 
   public isQueryField(): this is QueryField {
@@ -950,7 +1090,7 @@ export class ExploreField extends Explore {
   protected _parentExplore: Explore;
 
   constructor(structDef: StructDef, parentExplore: Explore, source?: Explore) {
-    super(structDef, parentExplore, source);
+    super(parentExplore._modelDef, structDef, parentExplore, source);
     this._parentExplore = parentExplore;
   }
 
@@ -976,7 +1116,11 @@ export class ExploreField extends Explore {
   }
 
   override tagParse(spec?: TagParseSpec) {
-    return annotationToTag(this._structDef.annotation, spec);
+    return annotationToTag(this._structDef.annotations, spec);
+  }
+
+  override get annotations(): Annotations {
+    return new Annotations(this._structDef.annotations);
   }
 
   public isQueryField(): this is QueryField {
@@ -1026,6 +1170,78 @@ export interface RuntimeContext {
    *  `config.finalizeGivens`). Filtered out of `Model.givens` so
    *  introspection-driven UIs don't render editors for them. */
   readonly finalizedGivens?: ReadonlySet<string>;
+}
+
+export type ReferenceKind =
+  'field' | 'join' | 'explore' | 'query' | 'sqlBlock' | 'given';
+
+const REFERENCE_KIND_BY_IR_TYPE: Record<
+  DocumentReference['type'],
+  ReferenceKind
+> = {
+  fieldReference: 'field',
+  joinReference: 'join',
+  exploreReference: 'explore',
+  queryReference: 'query',
+  sqlBlockReference: 'sqlBlock',
+  givenReference: 'given',
+};
+
+/**
+ * A reference to a definition found at a position in a Malloy document —
+ * the Foundation view returned by {@link Model.referenceAt}. Carries the
+ * use-site location (where the reference appears), the definition's
+ * location (where to go for "go to definition"), the kind of entity
+ * referenced, and an `annotations` view over the definition's annotations.
+ *
+ * Construct via {@link Model.referenceAt}; direct construction is internal.
+ */
+export class Reference {
+  /** @internal */
+  constructor(private readonly _ref: DocumentReference) {}
+
+  /** The name as written at the use site (e.g. `"orders"`). */
+  get text(): string {
+    return this._ref.text;
+  }
+
+  /** What kind of entity this reference points at. */
+  get kind(): ReferenceKind {
+    return REFERENCE_KIND_BY_IR_TYPE[this._ref.type];
+  }
+
+  /** Where this reference appears in source. */
+  get location(): DocumentLocation {
+    return this._ref.location;
+  }
+
+  /** Where the definition is. Omitted for synthetic references that have
+   *  no source-level definition site. */
+  get definitionLocation(): DocumentLocation | undefined {
+    return this._ref.definition.location;
+  }
+
+  /** The referent's type as a string (e.g. `"string"` for a string field,
+   *  `"source"` for a source). Free-form text from the IR; used by IDE
+   *  display to render type hints. */
+  get definitionType(): string {
+    return this._ref.definition.type;
+  }
+
+  /** For given references only: the textual form of the given's default
+   *  expression, if one was declared. Undefined for non-given references
+   *  and for givens without a default. */
+  get defaultText(): string | undefined {
+    if (this._ref.type === 'givenReference') {
+      return this._ref.definition.defaultText;
+    }
+    return undefined;
+  }
+
+  /** The definition's annotations, as a view. */
+  get annotations(): Annotations {
+    return new Annotations(this._ref.definition.annotations);
+  }
 }
 
 export class Model implements Taggable {
@@ -1088,26 +1304,55 @@ export class Model implements Taggable {
       if (this.runtimeContext?.finalizedGivens?.has(surfaceName)) continue;
       const decl = givens[entry.id];
       if (decl && !decl.inline) {
-        out.set(surfaceName, new Given(surfaceName, entry.id, decl));
+        out.set(
+          surfaceName,
+          new Given(surfaceName, entry.id, decl, this.modelDef)
+        );
       }
     }
     return out;
   }
 
-  tagParse(spec?: TagParseSpec): MalloyTagParse {
-    return annotationToTag(this.modelDef.annotation, spec);
+  /** This model's own `##` bundle (its self-entry's `ownNotes`). */
+  private get _ownModelAnnotations(): AnnotationsDef | undefined {
+    return this.modelDef.modelAnnotations[this.modelDef.modelID]?.ownNotes;
   }
 
+  /** @deprecated Use `.annotations.parseAsTag(route)`. */
+  tagParse(spec?: TagParseSpec): MalloyTagParse {
+    return annotationToTag(this._ownModelAnnotations, spec);
+  }
+
+  /** @deprecated Use `.annotations.texts(route)`. */
   getTaglines(prefix?: RegExp) {
-    return annotationToTaglines(this.modelDef.annotation, prefix);
+    return annotationToTaglines(this._ownModelAnnotations, prefix);
+  }
+
+  get annotations(): Annotations {
+    return new Annotations(this._ownModelAnnotations);
+  }
+
+  /** The model annotations resolved across this model's import/extend lineage. */
+  get modelAnnotations(): Annotations {
+    return new Annotations(getModelAnnotations(this.modelDef));
   }
 
   /**
-   * Retrieve a document reference for the token at the given position within
-   * the document that produced this model.
+   * Retrieve a reference for the token at the given position within the
+   * document that produced this model.
    *
    * @param position A position within the document.
-   * @return A `DocumentReference` at that position if one exists.
+   * @return A {@link Reference} at that position if one exists.
+   */
+  public referenceAt(position: ModelDocumentPosition): Reference | undefined {
+    const ref = this.references.find(position);
+    return ref ? new Reference(ref) : undefined;
+  }
+
+  /**
+   * @deprecated Use {@link referenceAt} — returns a Foundation
+   * {@link Reference} view instead of the raw IR. This method returns
+   * the IR shape directly and will be removed in a future release.
    */
   public getReference(
     position: ModelDocumentPosition
@@ -1198,7 +1443,7 @@ export class Model implements Taggable {
   public getExploreByName(name: string): Explore {
     const struct = this.getContent(name);
     if (struct && isSourceDef(struct)) {
-      return new Explore(struct);
+      return new Explore(this.modelDef, struct);
     }
     throw new Error("'name' is not an explore");
   }
@@ -1211,13 +1456,31 @@ export class Model implements Taggable {
   public get explores(): Explore[] {
     return Object.values(this.modelDef.contents)
       .filter(isSourceDef)
-      .map(structDef => new Explore(structDef));
+      .map(structDef => new Explore(this.modelDef, structDef));
   }
 
   /**
-   * Get an array of `NamedQueryDef`s contained in the model.
+   * Enumerate the model's top-level queries by identifier.
    *
-   * @return An array of `NamedQueryDef`s contained in the model.
+   * Returns the names of named queries (`query: foo is ...`) and the count
+   * of unnamed `run:` statements. Pair with {@link getPreparedQueryByName}
+   * and {@link getPreparedQueryByIndex} to load any of them — those are the
+   * only path to the query itself; this getter exposes only identifiers,
+   * not IR.
+   */
+  public queries(): ModelQueries {
+    const named: string[] = [];
+    for (const object of Object.values(this.modelDef.contents)) {
+      if (object.type === 'query') {
+        named.push(object.name);
+      }
+    }
+    return {named, unnamed: this.modelDef.queryList.length};
+  }
+
+  /**
+   * @deprecated Leaks IR. Use {@link queries} for enumeration and
+   *   {@link getPreparedQueryByName} to load a named query.
    */
   public get namedQueries(): NamedQueryDef[] {
     const isNamedQueryDef = (
@@ -1238,30 +1501,74 @@ export class Model implements Taggable {
   }
 
   /**
-   * Get the build plan for all #@ persist sources.
+   * Require the `experimental.persistence` compiler flag.
    *
-   * Walks through ALL queries and sources in the model, finding any persistent
-   * dependencies they reference (including hidden dependencies from imports).
+   * Read off the resolved model annotations (`.modelAnnotations`, the
+   * import/extend fold) rather than this model's own `##`, so the flag carries
+   * across extend.
+   */
+  private requirePersistence(api: string): void {
+    const modelTag = this.modelAnnotations.parseAsTag('!').tag;
+    if (!modelTag.has('experimental', 'persistence')) {
+      throw new Error(
+        `Model must have ##! experimental.persistence to use ${api}`
+      );
+    }
+  }
+
+  /**
+   * Walk every persistable source this model reaches, in dependency order.
    *
-   * Returns a BuildPlan containing:
-   * - `graphs`: Build graphs for root sources only (minimal build set)
-   * - `sources`: Map from sourceId to PersistSource (all persist sources)
+   * The roots are every source and query the model names, plus its unnamed
+   * queries. They share one walk, so a source several of them reach is visited
+   * once.
    *
-   * The minimal build set contains only "root" sources - those not depended
-   * on by any other persist source. Each root includes its transitive
-   * dependencies in the dependsOn field, preserving the tree structure
-   * for parallel building.
+   * This is the raw material {@link Runtime.getBuildTargets} folds into
+   * tables. Nothing here is keyed by artifact: that needs a BuildID, and a
+   * model cannot reach a connection to compute one.
+   */
+  public _walkPersistSources(tagParseLog: LogMessage[]): PersistWalk {
+    this.requirePersistence('_walkPersistSources()');
+    const roots: (SourceDef | InternalQuery)[] = [];
+    for (const obj of Object.values(this.modelDef.contents)) {
+      if (obj.type === 'query' || isSourceDef(obj)) {
+        roots.push(obj);
+      }
+    }
+    roots.push(...this.modelDef.queryList);
+    return walkPersistentDependencies(roots, this.modelDef, tagParseLog);
+  }
+
+  /**
+   * The {@link PersistSource} for a sourceID, or undefined if this model
+   * cannot resolve it.
+   */
+  public _persistSourceFor(sourceID: string): PersistSource | undefined {
+    const sourceDef = resolveSourceID(this.modelDef, sourceID);
+    return sourceDef
+      ? new PersistSource(new Explore(this.modelDef, sourceDef), this)
+      : undefined;
+  }
+
+  /**
+   * Every `#@ persist` source in the model, as a graph keyed by sourceID.
+   *
+   * Walks all queries and sources, including dependencies that arrived through
+   * an import and are in no namespace here, and returns the *roots* — the
+   * sources nothing else depends on — each carrying its dependencies in
+   * `dependsOn`.
+   *
+   * @deprecated A builder wants tables, and this reports sources. Those are not
+   * one to one: several sources routinely map onto one table, so keying on
+   * sourceID leaves every builder to discover the mapping by hashing. Its roots
+   * are computed by sourceID too, so for a persisted source with an extension
+   * the root is the extension and the declaring source is never named. Use
+   * {@link Runtime.getBuildTargets}, which answers in tables.
    *
    * @return BuildPlan with graphs and sources map
    */
   public getBuildPlan(): BuildPlan {
-    // Require experimental.persistence compiler flag
-    const modelTag = this.tagParse({prefix: /^##! /}).tag;
-    if (!modelTag.has('experimental', 'persistence')) {
-      throw new Error(
-        'Model must have ##! experimental.persistence to use getBuildPlan()'
-      );
-    }
+    this.requirePersistence('getBuildPlan()');
 
     const allDeps: BuildNode[] = [];
     const tagParseLog: LogMessage[] = [];
@@ -1291,13 +1598,16 @@ export class Model implements Taggable {
 
     // Build the sources map from all persistent sourceIDs encountered
     const sourcesMap: Record<string, PersistSource> = {};
+    const seen = new Set<BuildNode>();
     const collectSources = (nodes: BuildNode[]) => {
       for (const node of nodes) {
+        if (seen.has(node)) continue;
+        seen.add(node);
         if (!(node.sourceID in sourcesMap)) {
           const sourceDef = resolveSourceID(this.modelDef, node.sourceID);
           if (sourceDef) {
             sourcesMap[node.sourceID] = new PersistSource(
-              new Explore(sourceDef),
+              new Explore(this.modelDef, sourceDef),
               this
             );
           }
@@ -1414,24 +1724,52 @@ export class PersistSource implements Taggable {
   }
 
   /**
-   * The annotation on this source.
+   * @deprecated Hands out raw IR (`AnnotationsDef`). Use `.annotations`
+   * (returns the {@link Annotations} view). Slated for removal once
+   * external consumers migrate.
    */
-  get annotation(): Annotation | undefined {
-    return this.persistableDef.annotation;
+  get annotation(): AnnotationsDef | undefined {
+    return this.persistableDef.annotations;
   }
 
-  /**
-   * Parse the source's tags.
-   */
+  /** @deprecated Use `.annotations.parseAsTag(route)`. */
   tagParse(spec?: TagParseSpec): MalloyTagParse {
     return this.explore.tagParse(spec);
   }
 
-  /**
-   * Get annotation taglines matching an optional prefix.
-   */
+  /** @deprecated Use `.annotations.texts(route)`. */
   getTaglines(prefix?: RegExp): string[] {
     return this.explore.getTaglines(prefix);
+  }
+
+  get annotations(): Annotations {
+    return this.explore.annotations;
+  }
+
+  /** The model annotations resolved for this source. */
+  get modelAnnotations(): Annotations {
+    return this.explore.modelAnnotations;
+  }
+
+  /**
+   * Where this source was declared: the URL of the model that declared it, and
+   * the range of the `source:` statement.
+   *
+   * This is the handle to report a build failure against. A name is ambiguous
+   * across models, a sourceID is a name and a URL glued together, and a BuildID
+   * is a hash — none of them answer "where do I go to fix this," and a location
+   * does.
+   *
+   * The URL is whatever the model was loaded from, which may be a scheme only
+   * the caller understands. Rendering it for a human is the builder's job for
+   * the same reason `name=` is: the core supplied no URLReader and has no idea
+   * what these URLs mean.
+   *
+   * Undefined for a source with no recorded position — one synthesized rather
+   * than written down.
+   */
+  get location(): DocumentLocation | undefined {
+    return this.persistableDef.location;
   }
 
   /**
@@ -1475,21 +1813,30 @@ export class PersistSource implements Taggable {
    * For sql_select sources, returns the SQL string (with segment expansion).
    * For query_source sources, compiles the inner query to SQL.
    *
-   * @param options - Compile options including buildManifest for persistence.
+   * @param options - Compile options. `buildManifest` and `connectionDigests`
+   *   substitute already-built dependencies, giving the SQL to execute.
+   *   Anything that changes the SQL without them — `virtualMap` — must match
+   *   what the compiler will use, or the table is built under a key nothing
+   *   looks up.
    * @return The SQL string for this source.
    */
   getSQL(options?: CompileQueryOptions): string {
     const sd = this.persistableDef;
     const queryModel = this.model.queryModel;
 
+    // Compile with finalize=false so this SQL is the bare source SELECT.
+    // The build-time key (makeBuildId over this SQL) must equal the serve-time
+    // manifest lookup key, which persistedTableFor recomputes from the same
+    // unfinalized SELECT; finalizing would diverge the two on dialects with a
+    // final stage (Postgres) and mis-materialize the table.
     if (sd.type === 'sql_select') {
       return getCompiledSQL(
         sd,
         options ?? {},
-        (query, opts) => queryModel.compileQuery(query, opts).sql
+        (query, opts) => queryModel.compileQuery(query, opts, false).sql
       );
     } else {
-      const compiled = queryModel.compileQuery(sd.query, options);
+      const compiled = queryModel.compileQuery(sd.query, options, false);
       return compiled.sql;
     }
   }
@@ -1525,11 +1872,14 @@ export class Given implements Taggable {
    *                    value to `.run({givens: {[name]: ...}})`.
    * @param id          Global GivenID. Stable across imports and renames.
    * @param _internal   The internal Given declaration record.
+   * @param _modelDef   The model this given is declared in, for resolving
+   *                    its model annotations.
    */
   constructor(
     readonly name: string,
     readonly id: GivenID,
-    private readonly _internal: InternalGiven
+    private readonly _internal: InternalGiven,
+    private readonly _modelDef: ModelDef
   ) {}
 
   get type(): GivenTypeDef {
@@ -1545,37 +1895,79 @@ export class Given implements Taggable {
     return this._internal.location;
   }
 
+  /** @deprecated Use `.annotations.parseAsTag(route)`. */
   tagParse(spec?: TagParseSpec): MalloyTagParse {
-    return annotationToTag(this._internal.annotation, spec);
+    return annotationToTag(this._internal.annotations, spec);
   }
 
+  /** @deprecated Use `.annotations.texts(route)`. */
   getTaglines(prefix?: RegExp): string[] {
-    return annotationToTaglines(this._internal.annotation, prefix);
+    return annotationToTaglines(this._internal.annotations, prefix);
+  }
+
+  get annotations(): Annotations {
+    return new Annotations(this._internal.annotations);
+  }
+
+  /** The model annotations resolved for this given. */
+  get modelAnnotations(): Annotations {
+    return new Annotations(getModelAnnotations(this._modelDef));
   }
 }
 
-export class PreparedQuery implements Taggable {
-  public _query: InternalQuery | NamedQueryDef;
+/**
+ * Internal abstract base for Foundation wrappers around an IR `Pipeline`
+ * (an IR object that has a pipeline, annotations, and a source location).
+ * Owns the four `Taggable` accessors and a `location` getter, all reading
+ * from the wrapped IR. Not exported.
+ */
+abstract class PipelineBase implements Taggable {
+  constructor(protected pipelineDef: Pipeline) {}
 
+  get annotations(): Annotations {
+    return new Annotations(this.pipelineDef.annotations);
+  }
+
+  /** Resolved model annotations. Abstract because the base has no
+   *  model in hand — subclasses that carry one supply the resolution. */
+  abstract get modelAnnotations(): Annotations;
+
+  get location(): DocumentLocation | undefined {
+    return this.pipelineDef.location;
+  }
+
+  /** @deprecated Use `.annotations.parseAsTag(route)`. */
+  tagParse(spec?: TagParseSpec): MalloyTagParse {
+    return annotationToTag(this.pipelineDef.annotations, spec);
+  }
+
+  /** @deprecated Use `.annotations.texts(route)`. */
+  getTaglines(prefix?: RegExp): string[] {
+    return annotationToTaglines(this.pipelineDef.annotations, prefix);
+  }
+}
+
+export class PreparedQuery extends PipelineBase {
   constructor(
     query: InternalQuery,
     private _model: Model,
     public problems: LogMessage[],
     public name?: string
   ) {
-    this._query = query;
+    super(query);
+  }
+
+  public get _query(): InternalQuery | NamedQueryDef {
+    return this.pipelineDef as InternalQuery | NamedQueryDef;
   }
 
   public get _modelDef(): ModelDef {
     return this._model._modelDef;
   }
 
-  tagParse(spec?: TagParseSpec) {
-    return annotationToTag(this._query.annotation, spec);
-  }
-
-  getTaglines(prefix?: RegExp) {
-    return annotationToTaglines(this._query.annotation, prefix);
+  /** The model annotations resolved for this query's head. */
+  get modelAnnotations(): Annotations {
+    return new Annotations(getModelAnnotations(this._modelDef));
   }
 
   /**
@@ -1697,24 +2089,46 @@ export class PreparedResult implements Taggable {
     return new PreparedResult(query, modelDef);
   }
 
+  /** @deprecated Use `.annotations.parseAsTag(route)`. */
   tagParse(spec?: TagParseSpec): MalloyTagParse {
-    return annotationToTag(this.inner.annotation, spec);
+    return annotationToTag(this.inner.annotations, spec);
   }
 
+  /** @deprecated Use `.annotations.texts(route)`. */
   getTaglines(prefix?: RegExp) {
-    return annotationToTaglines(this.inner.annotation, prefix);
+    return annotationToTaglines(this.inner.annotations, prefix);
   }
 
-  get annotation(): Annotation | undefined {
-    return this.inner.annotation;
+  get annotations(): Annotations {
+    return new Annotations(this.inner.annotations);
   }
 
-  get modelAnnotation(): Annotation | undefined {
-    return this.modelDef.annotation;
+  /** The model annotations resolved for this query's run-head. */
+  get modelAnnotations(): Annotations {
+    return new Annotations(getModelAnnotations(this.modelDef));
+  }
+
+  /**
+   * @deprecated Hands out raw IR (`AnnotationsDef`). Use `.annotations`
+   * (returns the {@link Annotations} view) for read access. Internal
+   * code that needs the IR shape should read `._rawQuery.annotations`
+   * directly. Slated for removal once external consumers migrate.
+   */
+  get annotation(): AnnotationsDef | undefined {
+    return this.inner.annotations;
+  }
+
+  /**
+   * @deprecated Hands out raw IR (`AnnotationsDef`). Internal code that needs
+   * the model-level IR shape should call `getModelAnnotations(this.modelDef)`
+   * directly. Slated for removal once external consumers migrate.
+   */
+  get modelAnnotation(): AnnotationsDef | undefined {
+    return getModelAnnotations(this.modelDef);
   }
 
   get modelTag(): Tag {
-    return annotationToTag(this.modelDef.annotation).tag;
+    return new Annotations(getModelAnnotations(this.modelDef)).parseAsTag().tag;
   }
 
   /**
@@ -1750,13 +2164,13 @@ export class PreparedResult implements Taggable {
     const explore = this.inner.structs[this.inner.structs.length - 1];
     const namedExplore = {
       ...explore,
-      annotation: this.inner.annotation,
+      annotations: this.inner.annotations,
       name: this.inner.queryName || explore.name,
     };
     try {
-      return new Explore(namedExplore, this.sourceExplore);
+      return new Explore(this.modelDef, namedExplore, this.sourceExplore);
     } catch (error) {
-      return new Explore(namedExplore);
+      return new Explore(this.modelDef, namedExplore);
     }
   }
 
@@ -1764,7 +2178,7 @@ export class PreparedResult implements Taggable {
     const name = this.inner.sourceExplore;
     const explore = safeRecordGet(this.modelDef.contents, name);
     if (explore && isSourceDef(explore)) {
-      return new Explore(explore);
+      return new Explore(this.modelDef, explore);
     }
   }
 
@@ -1797,9 +2211,7 @@ export class PreparedResult implements Taggable {
     const structs = this.inner.structs;
     const struct = structs[structs.length - 1];
     const schema = {fields: convertFieldInfos(struct, struct.fields)};
-    const annotations = annotationToTaglines(this.inner.annotation).map(l => ({
-      value: l,
-    }));
+    const annotations = toStableAnnotations(this.inner.annotations);
     const metadataAnnot = struct.resultMetadata
       ? getResultStructMetadataAnnotation(struct, struct.resultMetadata)
       : undefined;
@@ -1837,10 +2249,8 @@ export class PreparedResult implements Taggable {
         .toString(),
     });
 
-    const modelAnnotations = annotationToTaglines(this.modelDef.annotation).map(
-      l => ({
-        value: l,
-      })
+    const modelAnnotations = toStableAnnotations(
+      getModelAnnotations(this.modelDef)
     );
 
     return {

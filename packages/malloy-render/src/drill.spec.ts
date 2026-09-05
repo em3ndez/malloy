@@ -1,9 +1,8 @@
 /*
- * Copyright (c) Meta Platforms, Inc. and affiliates.
- *
- * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree.
+ * Copyright Contributors to the Malloy project
+ * SPDX-License-Identifier: MIT
  */
+
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore
 import {runtimeFor} from '../../../test/src/runtimes';
@@ -434,6 +433,10 @@ describe('drill query', () => {
         view: over_time is {
           group_by: dep_month is month(dep_time)
           aggregate: flight_count
+          // #3045: months 5 and 10 tie on flight_count under these drill
+          // filters, and Malloy's default ordering does not break ties, so
+          // \`limit: 1\` needs an explicit tiebreak to be deterministic.
+          order_by: flight_count desc, dep_month
           limit: 1
         }
       }

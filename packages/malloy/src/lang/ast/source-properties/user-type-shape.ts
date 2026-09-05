@@ -4,7 +4,7 @@
  */
 
 import type {
-  Annotation,
+  AnnotationsDef,
   AtomicTypeDef,
   UserTypeFieldDef,
 } from '../../../model/malloy_types';
@@ -15,12 +15,10 @@ import {
 } from '../../../model/malloy_types';
 import {ListOf, MalloyElement} from '../types/malloy-element';
 import type {Noteable} from '../types/noteable';
-import {extendNoteMethod} from '../types/noteable';
 
 export abstract class UserTypeMember extends MalloyElement implements Noteable {
   readonly isNoteableObj = true;
-  extendNote = extendNoteMethod;
-  note?: Annotation;
+  ownAnnotation?: AnnotationsDef;
   constructor(readonly name: string) {
     super();
   }
@@ -40,8 +38,8 @@ export class UserTypeMemberDef extends UserTypeMember {
       name: this.name,
       typeDef: this.typeDef,
     };
-    if (this.note) {
-      field.annotation = this.note;
+    if (this.ownAnnotation) {
+      field.annotations = {...this.ownAnnotation};
     }
     return field;
   }
@@ -82,8 +80,8 @@ export class UserTypeMemberIndirect extends UserTypeMember {
     }
     const fieldsFromReferencedType = modelEntry.entry.fields.map(f => {
       const field = mkFieldDef(f.typeDef, f.name);
-      if (f.annotation) {
-        field.annotation = f.annotation;
+      if (f.annotations) {
+        field.annotations = f.annotations;
       }
       return field;
     });
@@ -95,12 +93,17 @@ export class UserTypeMemberIndirect extends UserTypeMember {
       typeDef = mkArrayTypeDef(typeDef);
     }
     const field: UserTypeFieldDef = {name: this.name, typeDef};
-    if (this.note) {
-      field.annotation = modelEntry.entry.annotation
-        ? {...this.note, inherits: modelEntry.entry.annotation}
-        : this.note;
-    } else if (modelEntry.entry.annotation) {
-      field.annotation = {inherits: modelEntry.entry.annotation};
+    if (this.ownAnnotation) {
+      field.annotations = modelEntry.entry.annotations
+        ? {
+            ...this.ownAnnotation,
+            inherits: modelEntry.entry.annotations,
+          }
+        : {...this.ownAnnotation};
+    } else if (modelEntry.entry.annotations) {
+      field.annotations = {
+        inherits: modelEntry.entry.annotations,
+      };
     }
     return field;
   }

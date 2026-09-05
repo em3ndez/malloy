@@ -52,13 +52,14 @@ The Malloy language uses dotted path notation to access nested data. Nested data
 Objects in Malloy (sources, queries, joins, measures, dimensions, `group_by`, `aggregate`, etc.) can have metadata attached via **annotations**.
 
 **Annotation syntax:**
-- `#` marks the beginning of an annotation
-- An annotation continues to end-of-line
-- Annotations apply to objects declared below them
-- In block declarations, block-level annotations apply to all items, and each item can have its own
-- `##` marks **model-level annotations** that apply to the entire model
+- `#` (object) or `##` (model) marks the beginning of an annotation
+- Single-line annotations run to end-of-line: `# tag`, `## model_tag`
+- Block annotations span multiple lines between `#|`/`|#` (object) or `##|`/`|##` (model); the body is dedented to its common leading-whitespace prefix
+- Annotations apply to the construct declared below them; block-level annotations on a multi-item construct (e.g. `dimension: { ... }`) apply to every item
 
-**Annotations are just text** - the design intentionally leaves room for multiple DSLs. Each application extracts its annotations via pattern matching and defines its own syntax. For details on the Malloy Tag Language used for parsing annotations, see [packages/malloy-tag/CONTEXT.md](packages/malloy-tag/CONTEXT.md).
+**Prefix and route.** Everything from the marker (`#`/`##`/`#|`/`##|`) up to the first whitespace is the annotation's **prefix**; it resolves to a **route** — a namespace key like `''` (the renderer's default), `!` (compiler flags), `@` (persistence), `docs`, `myApp`. Routes claimed by an app (`#(myApp) ...`) are how applications stake a namespace and decline MOTLY in favor of their own payload language. The grammar is formalized in [packages/malloy/src/prefix.ts](packages/malloy/src/prefix.ts); MOTLY itself is in [packages/malloy-tag/CONTEXT.md](packages/malloy-tag/CONTEXT.md).
+
+Read annotations on any tagged entity through its `annotations` view (`entity.annotations.parseAsTag(route)` for MOTLY; `entity.annotations.forRoute(route)` for raw text + source offsets when bringing your own parser).
 
 ## Data Model and Type System
 
@@ -118,6 +119,10 @@ Each database has its own package with connection handling and dialect-specific 
 - `malloy-db-snowflake/` - Snowflake adapter
 - `malloy-db-trino/` - Trino/Presto adapter
 - `malloy-db-publisher/` - Publishing/caching layer
+
+#### Native-dependency pins (do not loosen casually)
+
+`snowflake-sdk` (`2.3.1`) and `@databricks/sql` (`1.15.0`) are pinned to exact, pre-native versions, not `^` ranges. Why isn't visible here: downstream clients (the VS Code extension, `malloy-cli`) bundle with esbuild, which can't bundle native `.node` binaries. Newer driver releases ship them, so an unpinned range floats one in and breaks those builds — caught only in their CI. Bumping past these requires externalize-and-ship work in each client first (their `check-native` guard trips otherwise). Full pin ledger, methodology, and revisit triggers: [`docs/dependency-management/CONTEXT.md`](docs/dependency-management/CONTEXT.md).
 
 ### Supporting Libraries
 - `malloy-interfaces/` - TypeScript interfaces and Thrift-generated types
@@ -204,7 +209,7 @@ Some packages have codegen steps that generate source files from grammars or con
 - **`packages/malloy`** — ANTLR4 parser from `.g4` grammar files
 - **`packages/malloy-filter`** — Peggy parsers from `.peggy` grammar files
 - **`packages/malloy-malloy-sql`** — Peggy parsers from `.pegjs` grammar files
-- **`packages/malloy-render`** — Vite bundle from TypeScript/Solid sources
+- **`packages/malloy-render`** — Vite bundle from TypeScript/Solid sources, gated by a `tsc` type-check (`tsconfig.type-check.json`) that runs first so type errors fail the build; vite's own dts pass only prints them
 
 These use `scripts/femto-build.js`, a tiny content-hash-based build caching tool. Each package with codegen has a `femto-config.motly` with named targets specifying input globs and commands. femto-build hashes the inputs and skips the commands if nothing changed. Targets can depend on other targets via `deps`. This survives git operations (unlike Make's timestamp-based approach).
 
@@ -311,6 +316,8 @@ For new files, this is the current correct copyright text (here in C/Java/Javasc
 
 **Do not copy the header from a neighboring file.** Most existing files were created when the project used a longer Google MIT header; the short SPDX form above is what every *new* file must use. The neighboring-file pattern is the most common way to end up with the wrong header by accident. Always use the exact block above for new files, regardless of what the rest of the directory looks like.
 
+This same header is also recorded in the root [`LICENSE`](LICENSE) file, in its "SOURCE FILE HEADER" section.
+
 ## Commit and PR Guidelines
 
 Do not include AI attribution (e.g., "Generated with Claude Code", "Co-Authored-By: Claude") in commits or pull requests.
@@ -326,6 +333,8 @@ For deeper context on specific subsystems, see:
 - [packages/malloy-tag/CONTEXT.md](packages/malloy-tag/CONTEXT.md) - Tag language for annotation parsing
 - [packages/malloy-render/CONTEXT.md](packages/malloy-render/CONTEXT.md) - Data visualization and rendering
 - [test/CONTEXT.md](test/CONTEXT.md) - Test organization and infrastructure
+- [.github/workflows/CONTEXT.md](.github/workflows/CONTEXT.md) - CI and release: what CI runs, the external-PR security model, and npm publishing (OIDC trusted publishing)
+- [docs/dependency-management/](docs/dependency-management/CONTEXT.md) - Dependency management: the pin ledger (`CONTEXT.md` — how we use Dependabot, every version we deliberately pin/hold, why, what it costs, when to revisit) plus agent-agnostic runbooks for the monthly and security passes
 
 ## Maintaining the CONTEXT Tree
 

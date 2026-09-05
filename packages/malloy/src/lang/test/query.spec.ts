@@ -1,29 +1,12 @@
 /*
- * Copyright 2023 Google LLC
- *
- * Permission is hereby granted, free of charge, to any person obtaining
- * a copy of this software and associated documentation files
- * (the "Software"), to deal in the Software without restriction,
- * including without limitation the rights to use, copy, modify, merge,
- * publish, distribute, sublicense, and/or sell copies of the Software,
- * and to permit persons to whom the Software is furnished to do so,
- * subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be
- * included in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
- * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
- * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
- * IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
- * CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
- * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
- * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ * Copyright Contributors to the Malloy project
+ * SPDX-License-Identifier: MIT
  */
 
 import {
   TestTranslator,
   aTableDef,
+  answerSQLSchemaRequests,
   markSource,
   model,
   errorMessage,
@@ -33,6 +16,7 @@ import {
 import './parse-expects';
 import type {Query, QueryFieldDef, QuerySegment} from '../../model';
 import {
+  activeName,
   expressionIsCalculation,
   isJoined,
   isQuerySegment,
@@ -49,6 +33,13 @@ function getFirstQuerySegment(q: Query | undefined): QuerySegment | undefined {
 function getFirstSegmentFields(q: Query | undefined): QueryFieldDef[] {
   const qSeg = getFirstQuerySegment(q);
   return qSeg?.queryFields ?? [];
+}
+
+function getIndexFieldPaths(q: Query | undefined): string[] {
+  const seg = q?.pipeline[0];
+  return seg?.type === 'index'
+    ? seg.indexFields.map(f => f.path.join('.'))
+    : [];
 }
 
 function getFirstSegmentFieldNames(q: Query | undefined): string[] {
@@ -856,6 +847,50 @@ describe('query:', () => {
         'run: a->{ select: astr, ai calculate: num is lag(ai) }'
       ).toTranslate();
     });
+    test('nest illegal in a select segment', () => {
+      // A nest needs a grouping grain, so it may appear only in a grouping
+      // segment; in a select it forces a grouping/select collision.
+      expect(
+        markSource`run: a->{ select: astr; ${'nest: b is { group_by: ai }'} }`
+      ).toLog(errorMessage('Use of nest: is not allowed in a select query'));
+    });
+    test('group_by illegal in a select segment', () => {
+      expect(markSource`run: a->{ select: astr; ${'group_by: ai'} }`).toLog(
+        errorMessage('Use of group_by: is not allowed in a select query')
+      );
+    });
+    test('aggregate illegal in a select segment', () => {
+      expect(
+        markSource`run: a->{ select: astr; ${'aggregate: c is count()'} }`
+      ).toLog(
+        errorMessage('Use of aggregate: is not allowed in a select query')
+      );
+    });
+    test('index illegal in a select segment', () => {
+      expect(markSource`run: a->{ select: astr; ${'index: *'} }`).toLog(
+        errorMessage('Use of index: is not allowed in a select query')
+      );
+    });
+    test('sample illegal in a select segment', () => {
+      expect(markSource`run: a->{ select: astr; ${'sample: true'} }`).toLog(
+        errorMessage('Use of sample: is not allowed in a select query')
+      );
+    });
+    test('select illegal in a grouping segment', () => {
+      expect(markSource`run: a->{ group_by: astr; ${'select: ai'} }`).toLog(
+        errorMessage('Use of select: is not allowed in a grouping query')
+      );
+    });
+    test('index illegal in a grouping segment', () => {
+      expect(markSource`run: a->{ group_by: astr; ${'index: *'} }`).toLog(
+        errorMessage('Use of index: is not allowed in a grouping query')
+      );
+    });
+    test('select illegal in an index segment', () => {
+      expect(markSource`run: a->{ index: *; ${'select: astr'} }`).toLog(
+        errorMessage('Use of select: is not allowed in an index query')
+      );
+    });
     test('aggregate reference', () => {
       const doc = model`run: a->{ aggregate: ai.sum() }`;
       expect(doc).toTranslate();
@@ -921,14 +956,14 @@ describe('query:', () => {
     });
     test('star error checking', () => {
       expect(markSource`run: a->{select: ${'zzz'}.*}`).toLog(
-        errorMessage("No such field as 'zzz'")
+        errorMessage("'zzz' is not defined")
       );
       expect(markSource`run: ab->{select: b.${'zzz'}.*}`).toLog(
-        errorMessage("No such field as 'zzz'")
+        errorMessage("'zzz' is not defined")
       );
       expect(markSource`run: a->{select: ${'ai'}.*}`).toLog(
         errorMessage(
-          "Field 'ai' does not contain rows and cannot be expanded with '*'"
+          "'ai' does not contain fields and cannot be expanded with '*'"
         )
       );
       expect(markSource`run: a->{select:ai,${'*'}}`).toLog(
@@ -953,6 +988,161 @@ describe('query:', () => {
           "Cannot expand 'ai' in '*' because a field with that name already exists (conflicts with b.ai)"
         )
       );
+    });
+    describe('star expansion and access modifiers', () => {
+      const visibleFields = (...hidden: string[]) =>
+        afields.filter(f => !hidden.includes(f));
+
+      test('star does not expand a private field', () => {
+        const m = model`
+          ##! experimental.access_modifiers
+          source: c is a include { *; private: ai }
+          run: c -> { select: * }
+        `;
+        expect(m).toTranslate();
+        const fields = getFirstSegmentFieldNames(m.translator.getQuery(0));
+        expect(fields).toEqual(visibleFields('ai'));
+      });
+      test('star does not expand an internal field', () => {
+        const m = model`
+          ##! experimental.access_modifiers
+          source: c is a include { *; internal: ai }
+          run: c -> { select: * }
+        `;
+        expect(m).toTranslate();
+        const fields = getFirstSegmentFieldNames(m.translator.getQuery(0));
+        expect(fields).toEqual(visibleFields('ai'));
+      });
+      test('a name in the statement declaring the modifiers still reaches a private field', () => {
+        expect(`
+          ##! experimental.access_modifiers
+          source: c is a include { *; private: ai } extend {
+            dimension: doubled is ai + ai
+          }
+          run: c -> { group_by: doubled }
+        `).toTranslate();
+      });
+      test('star in the scope declaring the modifiers sees everything', () => {
+        const m = model`
+          ##! experimental.access_modifiers
+          source: c is a include { *; private: ai } extend {
+            view: everything is { select: * }
+          }
+          run: c -> everything
+        `;
+        expect(m).toTranslate();
+        const fields = getFirstSegmentFieldNames(m.translator.getQuery(0));
+        expect(fields).toEqual(afields);
+      });
+      test('star in a later extension is public only', () => {
+        const m = model`
+          ##! experimental.access_modifiers
+          source: c is a include {
+            *
+            private: ai
+            internal: af
+          }
+          source: d is c extend {
+            view: v is { select: * }
+          }
+          run: d -> v
+        `;
+        expect(m).toTranslate();
+        const fields = getFirstSegmentFieldNames(m.translator.getQuery(0));
+        expect(fields).toEqual(visibleFields('ai', 'af'));
+      });
+      test('join dot star does not expand the joined private field', () => {
+        const m = model`
+          ##! experimental.access_modifiers
+          source: c is a include { *; private: ai }
+          source: d is a extend { join_one: c on true }
+          run: d -> { select: c.* }
+        `;
+        expect(m).toTranslate();
+        const fields = getFirstSegmentFields(m.translator.getQuery(0)).map(f =>
+          f.type === 'fieldref' ? f.path : `wrong field type ${f.type}`
+        );
+        expect(fields).toEqual(visibleFields('ai').map(f => ['c', f]));
+      });
+      test('a star cannot walk a join it is legal to name', () => {
+        expect(markSource`
+          ##! experimental.access_modifiers
+          source: c is a
+          source: d is a extend { join_one: c on true } include { internal: c }
+          source: e is d extend {
+            dimension: byName is c.ai
+            view: v is { select: ${'c'}.* }
+          }
+        `).toLog(errorMessage("'c' is internal"));
+      });
+      test('star through an inaccessible join is an error', () => {
+        expect(markSource`
+          ##! experimental.access_modifiers
+          source: c is a
+          source: d is a extend {
+            join_one: c on true
+          } include {
+            internal: c
+          }
+          run: d -> { select: ${'c'}.* }
+        `).toLog(errorMessage("'c' is internal"));
+      });
+      test('index star does not index a private field', () => {
+        const m = model`
+          ##! experimental.access_modifiers
+          source: c is a include { *; private: ai }
+          run: c -> { index: * }
+          run: a -> { index: * }
+        `;
+        expect(m).toTranslate();
+        const withPrivate = getIndexFieldPaths(m.translator.getQuery(0));
+        const everything = getIndexFieldPaths(m.translator.getQuery(1));
+        expect(withPrivate).toEqual(everything.filter(f => f !== 'ai'));
+        expect(everything).toContain('ai');
+      });
+      test('index star through an inaccessible join is an error', () => {
+        expect(markSource`
+          ##! experimental.access_modifiers
+          source: c is a
+          source: d is a extend {
+            join_one: c on true
+          } include {
+            internal: c
+          }
+          run: d -> { index: ${'c'}.* }
+        `).toLog(errorMessage("'c' is internal"));
+      });
+      test('a star which names nothing is an error', () => {
+        expect(
+          `run: a -> { select: * { except: ${afields.join(', ')} } }`
+        ).toLog(error('wildcard-matched-no-fields'));
+      });
+      test('a star which names nothing because nothing is public is an error', () => {
+        expect(`
+          ##! experimental.access_modifiers
+          source: c is a include { private: * }
+          run: c -> { select: * }
+        `).toLog(error('wildcard-matched-no-fields'));
+      });
+      test('an index star which names nothing is an error', () => {
+        expect(`
+          ##! experimental.access_modifiers
+          source: c is a include { private: * }
+          run: c -> { index: * }
+        `).toLog(error('wildcard-matched-no-fields'));
+      });
+      test('a star which matches nothing is an error even beside a named field', () => {
+        expect(
+          `run: a -> { select: ai, * { except: ${afields.join(', ')} } }`
+        ).toLog(error('wildcard-matched-no-fields'));
+      });
+    });
+    test('a star can expand a dimension which turned out to be a join', () => {
+      const m = model`
+        source: x is a extend { dimension: copy is ais }
+        run: x -> { select: copy.* }
+      `;
+      expect(m).toTranslate();
     });
     test('regress check extend: and star', () => {
       const m = model`run: ab->{ extend: {dimension: x is 1} select: * }`;
@@ -1055,6 +1245,24 @@ describe('query:', () => {
       test('order by must be in the output space', () =>
         expect('run: a -> { order_by: af; group_by: astr }').toLog(
           errorMessage('Unknown field af in output space')
+        ));
+      test('order by rejects a dotted path with a helpful error', () =>
+        expect('run: a -> { group_by: astr; order_by: aninline.column }').toLog(
+          errorMessage(
+            "order_by takes the name of a field in the query output, not a path ('aninline.column'). To order by 'column', make it an output field and order by its name: column."
+          )
+        ));
+      test('order by dotted path suggests quoting a reserved segment', () =>
+        expect('run: a -> { group_by: astr; order_by: aninline.year }').toLog(
+          errorMessage(
+            "order_by takes the name of a field in the query output, not a path ('aninline.year'). To order by 'year', make it an output field and order by its name, quoting it because 'year' is a reserved word: `year`."
+          )
+        ));
+      test('order by a bare reserved word suggests quoting', () =>
+        expect('run: a -> { group_by: astr; order_by: year }').toLog(
+          errorMessage(
+            "'year' is a reserved word, so to order by it you must quote it: `year`"
+          )
         ));
       test('order by asc', () => {
         expect('run: a->{ order_by: astr asc; group_by: astr }').toTranslate();
@@ -1184,7 +1392,7 @@ describe('query:', () => {
       const notb = model.getSourceDef('notb');
       expect(notb).toBeDefined();
       if (notb) {
-        const d = notb.fields.find(f => f.as || f.name === 'd');
+        const d = notb.fields.find(f => activeName(f) === 'd');
         expect(d).toBeDefined();
         expect(d?.type).toBe('number');
         if (d?.type === 'number') {
@@ -2478,7 +2686,7 @@ describe('query:', () => {
         f => f.as === 'aext'
       );
       expect(aext).toBeDefined();
-      expect(aext?.annotation?.blockNotes).toMatchObject([
+      expect(aext?.annotations?.blockNotes).toMatchObject([
         {text: '# only_on_s2\n'},
       ]);
     });
@@ -2514,7 +2722,7 @@ describe('query:', () => {
         f => f.as === 'aext'
       );
       expect(aext).toBeDefined();
-      expect(aext?.annotation?.blockNotes).toMatchObject([
+      expect(aext?.annotations?.blockNotes).toMatchObject([
         {text: '# only_on_s2\n'},
       ]);
     });
@@ -2871,6 +3079,148 @@ describe('query:', () => {
     });
     test('constructor as query name', () => {
       expect('query: constructor is a -> { select: * }').toTranslate();
+    });
+  });
+});
+/*
+ * Malloy has no way to execute a query which spans two connections, so
+ * everything a query reaches has to be on the connection the query runs on.
+ * These tests cover the places where a second connection can be named and
+ * therefore has to be rejected.
+ */
+describe('cross connection references are errors', () => {
+  describe('joins', () => {
+    test('join_one from another connection', () => {
+      expect(markSource`
+        source: xa is _db_.table('aTable')
+        source: xb is _db2_.table('aTable')
+        run: xa extend { join_one: ${'xb on astr = xb.astr'} } -> { group_by: xb.astr }
+      `).toLog(
+        errorMessage(
+          "Cannot join 'xb', which is on connection '_db2_', " +
+            "into a source on connection '_db_'"
+        )
+      );
+    });
+    test('join_many from another connection', () => {
+      expect(markSource`
+        source: xb is _db2_.table('aTable')
+        run: a extend { join_many: ${'xb on astr = xb.astr'} } -> { group_by: xb.astr }
+      `).toLog(error('join-connection-mismatch'));
+    });
+    test('join_cross from another connection', () => {
+      expect(markSource`
+        source: xb is _db2_.table('aTable')
+        run: a extend { join_cross: ${'xb'} } -> { group_by: xb.astr }
+      `).toLog(error('join-connection-mismatch'));
+    });
+    test('join in a source extension', () => {
+      expect(markSource`
+        source: xb is _db2_.table('aTable')
+        source: xa is a extend { join_one: ${'xb on astr = xb.astr'} }
+      `).toLog(error('join-connection-mismatch'));
+    });
+    test('join with a primary key', () => {
+      expect(markSource`
+        source: xb is _db2_.table('aTable') extend { primary_key: astr }
+        source: xa is a extend { join_one: ${'xb with astr'} }
+      `).toLog(error('join-connection-mismatch'));
+    });
+    test('join of a query on another connection', () => {
+      expect(markSource`
+        source: xb is _db2_.table('aTable')
+        source: xa is a extend {
+          join_one: xq is ${'xb -> { group_by: astr }'} on astr = xq.astr
+        }
+      `).toLog(error('join-connection-mismatch'));
+    });
+    test('a base whose schema failed does not also report a connection', () => {
+      // The error source stands in for a base whose schema never arrived, and
+      // its connection is a sentinel. Reporting it would put `~unknown~` in
+      // front of a user who has a real error to read already.
+      const translator = model`
+        source: xa is _db_.table('noSuchTable') extend {
+          join_one: a on astr = a.astr
+        }
+      `.translator;
+      translator.translate();
+      translator.update({
+        errors: {tables: {'_db_:noSuchTable': 'no such table'}},
+      });
+      translator.translate();
+      const codes = translator.logger.getLog().map(l => l.code);
+      expect(codes).toContain('failed-to-fetch-table-schema');
+      expect(codes).not.toContain('join-connection-mismatch');
+    });
+    test('the connection check also catches a cross-dialect join', () => {
+      expect(markSource`
+        run: a extend { join_one: ${'bq_a on astr = bq_a.astr'} } -> { group_by: bq_a.astr }
+      `).toLog(error('join-connection-mismatch'));
+    });
+    test('joining into the other connection is also an error', () => {
+      expect(markSource`
+        source: xb is _db2_.table('aTable')
+        source: xa is xb extend { join_one: ${'a on astr = a.astr'} }
+      `).toLog(error('join-connection-mismatch'));
+    });
+  });
+
+  describe('sql() interpolation', () => {
+    test('query from another connection', () => {
+      expect(markSource`
+        source: xa is _db_.table('aTable') -> { group_by: astr }
+        source: xs is _db2_.sql("""SELECT * FROM %{ ${'xa -> { select: * }'} }""")
+      `).toLog(error('sql-source-connection-mismatch'));
+    });
+    test('source from another connection', () => {
+      expect(markSource`
+        source: xq is _db2_.table('aTable') -> { select: * }
+        source: xs is _db_.sql("""SELECT * FROM %{ ${'xq'} }""")
+      `).toLog(error('sql-source-connection-mismatch'));
+    });
+    test('wrong connection and not persistable both report', () => {
+      // `a` is a table, so it can never be interpolated, and it is also on
+      // the wrong connection. Both complaints belong to the same element, so
+      // both are logged.
+      expect(markSource`
+        source: xs is _db2_.sql("""SELECT * FROM %{ ${'a'} }""")
+      `).toLog(
+        error('sql-source-connection-mismatch'),
+        error('invalid-sql-source-interpolation')
+      );
+    });
+    test('a rejected interpolation does not ask for a schema', () => {
+      const translator = model`
+        source: xa is _db_.table('aTable') -> { group_by: astr }
+        source: xs is _db2_.sql("""SELECT * FROM %{ xa -> { select: * } }""")
+      `.translator;
+      const response = translator.translate();
+      expect(response).not.toHaveProperty('compileSQL');
+      expect(response.final).toBe(true);
+    });
+  });
+
+  describe('single connection references still translate', () => {
+    test('a second connection is usable on its own', () => {
+      expect(`
+        source: xb is _db2_.table('aTable')
+        run: xb -> { group_by: astr }
+      `).toTranslate();
+    });
+    test('join within the second connection', () => {
+      expect(`
+        source: xb is _db2_.table('aTable')
+        run: xb extend { join_one: xb2 is _db2_.table('aTable') on astr = xb2.astr }
+          -> { group_by: xb2.astr }
+      `).toTranslate();
+    });
+    test('interpolation within the second connection', () => {
+      const translator = model`
+        source: xa is _db2_.table('aTable') -> { group_by: astr }
+        source: xs is _db2_.sql("""SELECT * FROM %{ xa -> { select: * } }""")
+      `.translator;
+      answerSQLSchemaRequests(translator);
+      expect(translator).toTranslate();
     });
   });
 });

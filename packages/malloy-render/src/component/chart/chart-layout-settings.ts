@@ -1,24 +1,6 @@
 /*
- * Copyright 2023 Google LLC
- *
- * Permission is hereby granted, free of charge, to any person obtaining
- * a copy of this software and associated documentation files
- * (the "Software"), to deal in the Software without restriction,
- * including without limitation the rights to use, copy, modify, merge,
- * publish, distribute, sublicense, and/or sell copies of the Software,
- * and to permit persons to whom the Software is furnished to do so,
- * subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be
- * included in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
- * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
- * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
- * IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
- * CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
- * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
- * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ * Copyright Contributors to the Malloy project
+ * SPDX-License-Identifier: MIT
  */
 
 import type {
@@ -221,16 +203,13 @@ export function getXAxisSettings({
 
   const maxStringSize = getTextWidthDOM(maxString, xLabelFontStyles);
   const ellipsesSize = getTextWidthDOM('...', xLabelFontStyles);
+  const horizontalLabelHeight = getTextHeightDOM(
+    'ABCDEFGHIJKLMNOPQRSTUVWXYZgy',
+    xLabelFontStyles
+  );
 
-  const X_AXIS_THRESHOLD = 0.35;
-  const plotHeight = chartHeight - 2 * xTitleOffset - xTitleSize - ellipsesSize;
-
-  let labelHeight = Math.min(maxStringSize, X_AXIS_THRESHOLD * plotHeight);
-  labelLimit = labelHeight;
-  if (labelHeight < maxStringSize) {
-    labelHeight += ellipsesSize;
-  }
-  xAxisHeight = labelHeight + xTitleOffset * 2 + xTitleSize + xLabelPadding;
+  const titleBlock = xTitleOffset * 2 + xTitleSize + xLabelPadding;
+  const labelHeightBudget = Math.max(0, chartHeight - titleBlock);
 
   // TODO: improve this, this logic exists in more detail in generate vega spec. this is a hacky partial solution for now :/
   const uniqueValuesCt = xField.valueSet.size;
@@ -240,27 +219,70 @@ export function getXAxisSettings({
     : parentField.maxUniqueFieldValueCounts.get(xField.name)!;
   // TODO: shouldn't yTitleSize and yAxisWidth be subtracted from this chartWidth?
   const xSpacePerLabel = chartWidth / recordsToFit;
-  if (xSpacePerLabel > xAxisHeight || xSpacePerLabel > maxStringSize) {
+
+  // labelSeparation in the Vega axis spec; keep in sync with generate-*-vega-spec.ts.
+  const LABEL_SEPARATION = 4;
+  // cos(45°) = sin(45°) = √2/2. The vertical bounding box of a -45° rotated
+  // label is (width + lineHeight) * cos(45°), since both the width and the
+  // line-height project onto the vertical axis after rotation.
+  const SQRT2_OVER_2 = Math.SQRT1_2;
+  const diagonalBand = (maxStringSize + horizontalLabelHeight) * SQRT2_OVER_2;
+  // Cap the vertical (-90°) label band at this fraction of the chart height so a
+  // long categorical label can't starve the plot. The pre-3-tier code used the
+  // same 0.35 fraction but against a plotHeight estimate that subtracted the
+  // title block and ellipsis; that expression collapsed to a few pixels on short
+  // charts and over-truncated labels (the #2777 complaint). Capping against
+  // chartHeight keeps the plot protection without that degenerate collapse.
+  const MAX_VERTICAL_LABEL_HEIGHT_FRACTION = 0.35;
+
+  let reservedLabelBand: number;
+
+  if (xSpacePerLabel >= maxStringSize + LABEL_SEPARATION) {
+    // Tier 1: horizontal. Labels fit without overlap, no truncation needed.
     labelAngle = 0;
-    // Remove label limit; our vega specs should use labelOverlap setting to hide overlapping labels
     labelLimit = 0;
     labelAlign = undefined;
-
-    const horizontalLabelHeight = getTextHeightDOM(
-      'ABCDEFGHIJKLMNOPQRSTUVWXYZgy',
-      xLabelFontStyles
-    );
-    xAxisHeight = horizontalLabelHeight + xTitleOffset * 2 + xTitleSize;
+    reservedLabelBand = horizontalLabelHeight;
+  } else if (
+    xSpacePerLabel >= maxStringSize * SQRT2_OVER_2 + LABEL_SEPARATION &&
+    diagonalBand <= labelHeightBudget
+  ) {
+    // Tier 2: diagonal (-45°). Both the horizontal and vertical projections fit.
+    labelAngle = -45;
+    labelAlign = 'right';
+    labelLimit = 0;
+    reservedLabelBand = diagonalBand;
+  } else {
+    // Tier 3: vertical (-90°). Truncate when the label doesn't fit the available
+    // label band, OR when leaving it un-truncated would crush the plot. Short
+    // labels still skip truncation, preserving the #2777 fix.
+    labelAngle = -90;
+    labelAlign = 'right';
+    const plotProtectionCap = MAX_VERTICAL_LABEL_HEIGHT_FRACTION * chartHeight;
+    if (
+      maxStringSize <= labelHeightBudget &&
+      maxStringSize <= plotProtectionCap
+    ) {
+      labelLimit = 0;
+      reservedLabelBand = maxStringSize;
+    } else {
+      // Vega appends '...' past labelLimit, so the rendered band is
+      // labelLimit + ellipsesSize. Math.max(1, ...) avoids labelLimit=0
+      // which Vega treats as "no limit".
+      labelLimit = Math.max(1, Math.min(plotProtectionCap, labelHeightBudget));
+      reservedLabelBand = labelLimit + ellipsesSize;
+    }
   }
 
-  const titleArea = xAxisHeight - (xLabelPadding + labelLimit);
+  xAxisHeight = reservedLabelBand + titleBlock;
+  const titleArea = xAxisHeight - (xLabelPadding + reservedLabelBand);
 
   return {
     labelAngle,
     labelLimit,
     labelPadding: xLabelPadding,
-    minExtent: labelLimit,
-    maxExtent: labelLimit,
+    minExtent: reservedLabelBand,
+    maxExtent: reservedLabelBand,
     labelBaseline: 'top',
     labelAlign,
     height: xAxisHeight,
@@ -298,7 +320,27 @@ export type ChartLayoutSettings = {
     titleFontWeight?: FontWeightValue;
   };
   yScale: {
-    domain: number[];
+    // null when the axis domain is independent (per-row); consumers fall back
+    // to a data-driven domain. Matches y2Scale below.
+    domain: number[] | null;
+  };
+  // Secondary (right) measure axis, present only for dual-axis charts (combo).
+  // Bar/line charts leave these undefined and are unaffected.
+  y2Axis?: {
+    width: number;
+    minExtent: number;
+    maxExtent: number;
+    tickCount?: number;
+    hidden: boolean;
+    yTitleSize: number;
+    labelPadding: number;
+    titlePadding: number;
+    titleFont: string;
+    titleFontSize: number;
+    titleFontWeight?: FontWeightValue;
+  };
+  y2Scale?: {
+    domain: number[] | null;
   };
   xField: Field;
   yField: Field;
@@ -327,6 +369,145 @@ const CHART_SIZES = {
 // TODO: read from theme CSS
 const ROW_HEIGHT = 28;
 
+// When d3's `.nice()` ticks stop short of the domain max, the top data point
+// would be clipped at the plot's top edge. Returns the extra virtual chart
+// height needed to keep that top value visible (0 when the top tick already
+// reaches the domain max). Callers subtract this from the top padding. Shared
+// by the primary and secondary (combo) axes so both get the same correction.
+function topTickOverflowExtra(
+  domain: number[],
+  topTick: number | undefined,
+  chartHeight: number
+): number {
+  const maxAxisVal = domain.at(1);
+  const minAxisVal = domain.at(0);
+  if (
+    topTick !== undefined &&
+    maxAxisVal !== undefined &&
+    minAxisVal !== undefined &&
+    topTick < maxAxisVal
+  ) {
+    const offRatio = (maxAxisVal - topTick) / (maxAxisVal - minAxisVal);
+    return chartHeight / (1 - offRatio) - chartHeight;
+  }
+  return 0;
+}
+
+// Compute the width/domain metrics for a single measure axis. Both the primary
+// axis and the secondary (right) axis of a combo chart run through this one
+// helper, so their label-measuring math is shared and can't drift.
+function measureAxisMetrics(
+  yField: Field,
+  minVal: number,
+  maxVal: number,
+  chartHeight: number,
+  fontSettings: ReturnType<typeof getAxisFontSettings>,
+  vegaConfig?: Config
+): {
+  width: number;
+  domain: number[];
+  minExtent: number;
+  maxExtent: number;
+  tickCount: number;
+  topOverflowExtra: number;
+  yTitleSize: number;
+  labelPadding: number;
+  titlePadding: number;
+  titleFont: string;
+  titleFontSize: number;
+  titleFontWeight?: FontWeightValue;
+} {
+  const yScale = scale('linear')()
+    .domain([minVal, maxVal])
+    .nice()
+    .range([chartHeight, 0]);
+  const domain = yScale.domain();
+  const tickCount = Math.ceil(chartHeight / 40);
+  const topOverflowExtra = topTickOverflowExtra(
+    domain,
+    yScale.ticks(tickCount).at(-1),
+    chartHeight
+  );
+
+  const maxAxisVal = domain.at(1);
+  const minAxisVal = domain.at(0);
+  const l = locale();
+  const formattedMin = yField.isBasic()
+    ? renderNumericField(yField, minAxisVal)
+    : l.format(',')(minAxisVal);
+  const formattedMax = yField.isBasic()
+    ? renderNumericField(yField, maxAxisVal)
+    : l.format(',')(maxAxisVal);
+
+  const yLabelFontStyles = {
+    fontFamily: fontSettings.yLabel.fontFamily,
+    fontSize: fontSettings.yLabel.fontSize,
+    ...(fontSettings.yLabel.fontWeight && {
+      fontWeight: fontSettings.yLabel.fontWeight,
+    }),
+    width: 'fit-content',
+    opacity: '0',
+    fontVariantNumeric: 'tabular-nums',
+    position: 'absolute',
+  };
+  const yTitleFontStyles = {
+    fontFamily: fontSettings.yTitle.fontFamily,
+    fontSize: fontSettings.yTitle.fontSize,
+    ...(fontSettings.yTitle.fontWeight && {
+      fontWeight: fontSettings.yTitle.fontWeight,
+    }),
+    width: 'fit-content',
+    opacity: '0',
+    position: 'absolute',
+  };
+
+  const yTitleSize = getTextHeightDOM(
+    'ABCDEFGHIJKLMNOPQRSTUVWXYZgy',
+    yTitleFontStyles
+  );
+
+  const axisYTitlePadding = vegaConfig?.axisY?.titlePadding;
+  const axisTitlePadding = vegaConfig?.axis?.titlePadding;
+  const configTitleOffset = vegaConfig?.title?.offset;
+  let yTitleOffset = yTitleSize;
+  if (axisYTitlePadding !== undefined) yTitleOffset = Number(axisYTitlePadding);
+  else if (axisTitlePadding !== undefined)
+    yTitleOffset = Number(axisTitlePadding);
+  else if (configTitleOffset !== undefined)
+    yTitleOffset = Number(configTitleOffset);
+
+  const axisYLabelPadding = vegaConfig?.axisY?.labelPadding;
+  const axisLabelPadding = vegaConfig?.axis?.labelPadding;
+  let yLabelPadding = 6;
+  if (axisYLabelPadding !== undefined)
+    yLabelPadding = Number(axisYLabelPadding);
+  else if (axisLabelPadding !== undefined)
+    yLabelPadding = Number(axisLabelPadding);
+
+  const maxYLabelWidth = Math.max(
+    getTextWidthDOM(formattedMin, yLabelFontStyles),
+    getTextWidthDOM(formattedMax, yLabelFontStyles)
+  );
+  const width = maxYLabelWidth + 2 * yTitleOffset + yTitleSize + yLabelPadding;
+
+  return {
+    width,
+    domain,
+    minExtent: maxYLabelWidth,
+    maxExtent: maxYLabelWidth,
+    tickCount,
+    topOverflowExtra,
+    yTitleSize,
+    labelPadding: yLabelPadding,
+    titlePadding: yTitleOffset,
+    titleFont: fontSettings.yTitle.fontFamily,
+    titleFontSize: parseInt(fontSettings.yTitle.fontSize),
+    ...(fontSettings.yTitle.fontWeight && {
+      titleFontWeight: fontSettings.yTitle.fontWeight as FontWeightValue,
+    }),
+  };
+}
+
 export function getChartLayoutSettings(
   field: NestField,
   options: {
@@ -338,6 +519,11 @@ export function getChartLayoutSettings(
     getXMinMax?: () => [number, number];
     getYMinMax?: () => [number, number];
     independentY?: boolean;
+    // Secondary (right) measure axis for dual-axis charts (combo). When
+    // provided, a second y-axis is sized and right padding is reserved for it.
+    y2Field?: Field;
+    getY2MinMax?: () => [number, number];
+    independentY2?: boolean;
     vegaConfig?: Config;
   }
 ): ChartLayoutSettings {
@@ -378,106 +564,93 @@ export function getChartLayoutSettings(
   const hasYAxis = presetSize !== 'spark';
   let topPadding = presetSize !== 'spark' ? ROW_HEIGHT - 1 : 0; // Subtract 1 to account for top border
   let yTickCount: number | undefined;
+  // Extra height each axis needs so its top data point isn't clipped (see
+  // topTickOverflowExtra). Applied once, below, using the larger of the two so
+  // a dual-axis (combo) chart protects whichever axis needs it.
+  let primaryTopOverflow = 0;
+  let y2TopOverflow = 0;
 
   const fontSettings = getAxisFontSettings(options.vegaConfig);
   const [minVal, maxVal] = options?.getYMinMax?.() ?? [
     yField.minNumber!,
     yField.maxNumber!,
   ];
-  const yScale = scale('linear')()
-    .domain([minVal, maxVal])
-    .nice()
-    .range([chartHeight, 0]);
-  const yDomain = yScale.domain();
 
+  // Primary (left) axis. Sized by the shared measureAxisMetrics helper — the
+  // same path the secondary (combo) axis takes — so the two can't drift. The
+  // nice()'d domain it returns is also what the yScale return uses; for the
+  // spark case (no labels measured) we compute that domain directly.
+  let yDomain: number[];
   if (hasYAxis) {
-    const maxAxisVal = yScale.domain().at(1);
-    const minAxisVal = yScale.domain().at(0);
-    const l = locale();
-    const formattedMin = yField.isBasic()
-      ? renderNumericField(yField, minAxisVal)
-      : l.format(',')(minAxisVal);
-    const formattedMax = yField.isBasic()
-      ? renderNumericField(yField, maxAxisVal)
-      : l.format(',')(maxAxisVal);
-
-    const yLabelFontStyles = {
-      fontFamily: fontSettings.yLabel.fontFamily,
-      fontSize: fontSettings.yLabel.fontSize,
-      ...(fontSettings.yLabel.fontWeight && {
-        fontWeight: fontSettings.yLabel.fontWeight,
-      }),
-      width: 'fit-content',
-      opacity: '0',
-      fontVariantNumeric: 'tabular-nums',
-      position: 'absolute',
-    };
-
-    const yTitleFontStyles = {
-      fontFamily: fontSettings.yTitle.fontFamily,
-      fontSize: fontSettings.yTitle.fontSize,
-      ...(fontSettings.yTitle.fontWeight && {
-        fontWeight: fontSettings.yTitle.fontWeight,
-      }),
-      width: 'fit-content',
-      opacity: '0',
-      position: 'absolute',
-    };
-
-    // Measure the height of title text with capital letters to get accurate vertical spacing
-    yTitleSize = getTextHeightDOM(
-      'ABCDEFGHIJKLMNOPQRSTUVWXYZgy',
-      yTitleFontStyles
+    const m = measureAxisMetrics(
+      yField,
+      minVal,
+      maxVal,
+      chartHeight,
+      fontSettings,
+      options.vegaConfig
     );
-
-    const axisYTitlePadding = options.vegaConfig?.axisY?.titlePadding;
-    const axisTitlePadding = options.vegaConfig?.axis?.titlePadding;
-    const configTitleOffset = options.vegaConfig?.title?.offset;
-
-    if (axisYTitlePadding !== undefined) {
-      yTitleOffset = Number(axisYTitlePadding);
-    } else if (axisTitlePadding !== undefined) {
-      yTitleOffset = Number(axisTitlePadding);
-    } else if (configTitleOffset !== undefined) {
-      yTitleOffset = Number(configTitleOffset);
-    } else {
-      // Default title offset
-      yTitleOffset = yTitleSize;
+    yAxisWidth = m.width;
+    maxYLabelWidth = m.minExtent;
+    yTitleSize = m.yTitleSize;
+    yTitleOffset = m.titlePadding;
+    yLabelPadding = m.labelPadding;
+    yDomain = m.domain;
+    primaryTopOverflow = m.topOverflowExtra;
+    if (primaryTopOverflow > 0) {
+      // Hardcode # of ticks, or the resize could make room for more ticks and
+      // then screw things up.
+      yTickCount = m.tickCount;
     }
+  } else {
+    yDomain = scale('linear')()
+      .domain([minVal, maxVal])
+      .nice()
+      .range([chartHeight, 0])
+      .domain();
+  }
 
-    // Repeat this logic for labelPadding, but only check axisY and axis (not title)
-
-    const axisYLabelPadding = options.vegaConfig?.axisY?.labelPadding;
-    const axisLabelPadding = options.vegaConfig?.axis?.labelPadding;
-
-    if (axisYLabelPadding !== undefined) {
-      yLabelPadding = Number(axisYLabelPadding);
-    } else if (axisLabelPadding !== undefined) {
-      yLabelPadding = Number(axisLabelPadding);
-    } else {
-      // Default label padding
-      yLabelPadding = 6;
-    }
-
-    maxYLabelWidth = Math.max(
-      getTextWidthDOM(formattedMin, yLabelFontStyles),
-      getTextWidthDOM(formattedMax, yLabelFontStyles)
+  // Secondary (right) measure axis for combo charts.
+  let y2Axis: ChartLayoutSettings['y2Axis'];
+  let y2Domain: number[] | null = null;
+  if (options.y2Field && hasYAxis) {
+    const [min2, max2] = options.getY2MinMax?.() ?? [
+      options.y2Field.minNumber!,
+      options.y2Field.maxNumber!,
+    ];
+    const m = measureAxisMetrics(
+      options.y2Field,
+      min2,
+      max2,
+      chartHeight,
+      fontSettings,
+      options.vegaConfig
     );
-    yAxisWidth = maxYLabelWidth + 2 * yTitleOffset + yTitleSize + yLabelPadding;
+    y2Axis = {
+      width: m.width,
+      minExtent: m.minExtent,
+      maxExtent: m.maxExtent,
+      tickCount: m.tickCount,
+      hidden: false,
+      yTitleSize: m.yTitleSize,
+      titlePadding: m.titlePadding,
+      labelPadding: m.labelPadding,
+      titleFont: m.titleFont,
+      titleFontSize: m.titleFontSize,
+      ...(m.titleFontWeight && {titleFontWeight: m.titleFontWeight}),
+    };
+    y2Domain = options.independentY2 ? null : m.domain;
+    y2TopOverflow = m.topOverflowExtra;
+  }
 
-    // Check whether we need to adjust axis values manually
-    const noOfTicks = Math.ceil(chartHeight / 40);
-    const ticks = yScale.ticks(noOfTicks);
-    const topTick = ticks.at(-1);
-    if (topTick < maxAxisVal) {
-      const offRatio = (maxAxisVal - topTick) / (maxAxisVal - minAxisVal);
-      // adjust chart height
-      const newChartHeight = chartHeight / (1 - offRatio);
-      // adjust chart padding
-      topPadding = Math.max(0, topPadding - (newChartHeight - chartHeight));
-      // Hardcode # of ticks, or the resize could make room for more ticks and then screw things up
-      yTickCount = noOfTicks;
-    }
+  // Reserve top room for whichever axis's top value would otherwise be clipped.
+  // A single subtraction (not one per axis) keeps a dual-axis chart from
+  // double-counting the correction.
+  if (hasYAxis) {
+    topPadding = Math.max(
+      0,
+      topPadding - Math.max(primaryTopOverflow, y2TopOverflow)
+    );
   }
 
   const isSpark = options.size.preset === 'spark';
@@ -498,7 +671,9 @@ export function getChartLayoutSettings(
         top: topPadding + 1,
         left: yAxisWidth,
         bottom: xAxisSettings.height,
-        right: 8,
+        // Reserve room on the right for the secondary axis when present; the
+        // legend (if any) is added on top of this by the spec generator.
+        right: y2Axis ? y2Axis.width : 8,
       };
 
   // TODO: do we need these different sizes anymore, since all the same?
@@ -529,6 +704,7 @@ export function getChartLayoutSettings(
     yScale: {
       domain: options.independentY ? null : yDomain,
     },
+    ...(y2Axis && {y2Axis, y2Scale: {domain: y2Domain}}),
     padding: isSpark ? {top: 4, left: 0, bottom: 4, right: 0} : padding,
     xField,
     yField,

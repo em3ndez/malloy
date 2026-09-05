@@ -1,24 +1,6 @@
 /*
- * Copyright 2023 Google LLC
- *
- * Permission is hereby granted, free of charge, to any person obtaining
- * a copy of this software and associated documentation files
- * (the "Software"), to deal in the Software without restriction,
- * including without limitation the rights to use, copy, modify, merge,
- * publish, distribute, sublicense, and/or sell copies of the Software,
- * and to permit persons to whom the Software is furnished to do so,
- * subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be
- * included in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
- * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
- * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
- * IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
- * CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
- * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
- * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ * Copyright Contributors to the Malloy project
+ * SPDX-License-Identifier: MIT
  */
 
 import type {Query, StructDef} from '../../../model/malloy_types';
@@ -34,6 +16,7 @@ import {
   checkRequiredGroupBys,
   computeQueryGivenUsage,
 } from '../../composite-source-utils';
+import {detectAndRemovePartialStages} from '../query-utils';
 
 /**
  * A query operation that adds segments to a LHS source or query.
@@ -50,7 +33,7 @@ export class QueryArrow extends QueryBase implements QueryElement {
     super({source, view});
   }
 
-  queryComp(isRefOk: boolean): QueryComp {
+  queryComp(isRefOk: boolean, isPartialOk: boolean): QueryComp {
     let inputStruct: StructDef;
     let queryBase: Query;
     let fieldSpace: FieldSpace;
@@ -72,14 +55,16 @@ export class QueryArrow extends QueryBase implements QueryElement {
       fieldSpace = new StaticSourceSpace(inputStruct, 'public');
     } else {
       // We are adding a second stage to the given "source" query; we get the query and add a segment
-      const lhsQuery = this.source.queryComp(isRefOk);
+      // The LHS stages are complete stages, nothing will refine them, so they
+      // are never allowed to be partial no matter what this caller accepts.
+      const lhsQuery = this.source.queryComp(isRefOk, false);
       queryBase = lhsQuery.query;
       inputStruct = lhsQuery.outputStruct;
       fieldSpace = new StaticSourceSpace(lhsQuery.outputStruct, 'public');
     }
     const {
       pipeline: rhsPipeline,
-      annotation,
+      annotations,
       outputStruct,
       name,
     } = this.view.pipelineComp(fieldSpace);
@@ -87,7 +72,7 @@ export class QueryArrow extends QueryBase implements QueryElement {
     const query = {
       ...queryBase,
       name,
-      annotation,
+      annotations,
       pipeline: [...queryBase.pipeline, ...rhsPipeline],
     };
 
@@ -127,12 +112,16 @@ export class QueryArrow extends QueryBase implements QueryElement {
       ),
     ];
 
+    const finalPipeline = isPartialOk
+      ? pipelineWithExpandedFieldUsage
+      : detectAndRemovePartialStages(pipelineWithExpandedFieldUsage, this);
+
     return {
       query: {
         ...query,
         compositeResolvedSourceDef,
-        pipeline: pipelineWithExpandedFieldUsage,
-        givenUsage: computeQueryGivenUsage(pipelineWithExpandedFieldUsage),
+        pipeline: finalPipeline,
+        givenUsage: computeQueryGivenUsage(finalPipeline),
       },
       outputStruct,
       inputStruct,

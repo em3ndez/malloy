@@ -1,8 +1,6 @@
 /*
- * Copyright (c) Meta Platforms, Inc. and affiliates.
- *
- * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree.
+ * Copyright Contributors to the Malloy project
+ * SPDX-License-Identifier: MIT
  */
 
 import type {
@@ -18,12 +16,13 @@ import * as vega from 'vega';
 import usAtlas from 'us-atlas/states-10m.json';
 import {mergeVegaConfigs} from '@/component/vega/merge-vega-configs';
 import {STATE_CODES} from '@/html/state_codes';
-import {getColorScale} from '@/html/utils';
+import {getColorScale, mapCanvasBackground} from '@/html/utils';
 import type {
   GetResultMetadataOptions,
   RenderMetadata,
 } from '@/component/render-result-metadata';
 import type {RenderLogCollector} from '@/component/render-log-collector';
+import type {MalloyExplicitTheme} from '@/api/types';
 
 function getDataType(
   field: Field,
@@ -127,6 +126,7 @@ export const ShapeMapPluginFactory: RenderPluginFactory<DOMRenderPluginInstance>
     create: (field: Field): DOMRenderPluginInstance => {
       let vegaConfigOverride: Record<string, unknown> = {};
       let logCollector: RenderLogCollector | undefined;
+      let explicitTheme: MalloyExplicitTheme | undefined;
 
       return {
         name: 'shape_map',
@@ -141,6 +141,7 @@ export const ShapeMapPluginFactory: RenderPluginFactory<DOMRenderPluginInstance>
           vegaConfigOverride =
             options.getVegaConfigOverride?.('shape_map') ?? {};
           logCollector = options.renderFieldMetadata.logCollector;
+          explicitTheme = options.explicitTheme;
         },
 
         renderToDOM: (container: HTMLElement, props: RenderProps): void => {
@@ -164,7 +165,7 @@ export const ShapeMapPluginFactory: RenderPluginFactory<DOMRenderPluginInstance>
                   field: colorField.name,
                   type: colorType,
                   axis: {title: colorField.name},
-                  scale: getColorScale(colorType, false),
+                  scale: getColorScale(colorType, false, false, explicitTheme),
                 }
               : undefined;
 
@@ -205,7 +206,12 @@ export const ShapeMapPluginFactory: RenderPluginFactory<DOMRenderPluginInstance>
                 },
               },
             ],
-            background: 'transparent',
+            // Map canvas background from the embedder theme; an unset or
+            // empty value falls back to transparent so the map blends with
+            // the host chrome. `vegaConfigOverride` cannot change this: it
+            // merges only into spec.config, which a top-level spec.background
+            // shadows in Vega-Lite.
+            background: mapCanvasBackground(explicitTheme),
             config: SHAPE_MAP_VEGA_CONFIG,
           };
 

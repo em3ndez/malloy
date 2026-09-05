@@ -1,28 +1,14 @@
 /*
- * Copyright 2023 Google LLC
- *
- * Permission is hereby granted, free of charge, to any person obtaining
- * a copy of this software and associated documentation files
- * (the "Software"), to deal in the Software without restriction,
- * including without limitation the rights to use, copy, modify, merge,
- * publish, distribute, sublicense, and/or sell copies of the Software,
- * and to permit persons to whom the Software is furnished to do so,
- * subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be
- * included in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
- * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
- * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
- * IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
- * CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
- * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
- * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ * Copyright Contributors to the Malloy project
+ * SPDX-License-Identifier: MIT
  */
 
-import type {Annotation, StructDef} from '../../../model/malloy_types';
-import {isPersistableSourceDef} from '../../../model/malloy_types';
+import type {AnnotationsDef, StructDef} from '../../../model/malloy_types';
+import {
+  activeName,
+  isPersistableSourceDef,
+  isSourceDef,
+} from '../../../model/malloy_types';
 import {mkSourceID} from '../../../model/source_def_utils';
 import {checkPersistAnnotation} from '../../../model/persist_utils';
 import {ErrorFactory} from '../error-factory';
@@ -30,7 +16,6 @@ import type {HasParameter} from '../parameters/has-parameter';
 import type {DocStatement, Document} from '../types/malloy-element';
 import {MalloyElement, DocStatementList} from '../types/malloy-element';
 import type {Noteable} from '../types/noteable';
-import {extendNoteMethod} from '../types/noteable';
 import type {SourceQueryElement} from '../source-query-elements/source-query-element';
 import {getPartitionCompositeDesc} from '../../composite-source-utils';
 
@@ -54,8 +39,7 @@ export class DefineSource
     }
   }
   readonly isNoteableObj = true;
-  extendNote = extendNoteMethod;
-  note?: Annotation;
+  ownAnnotation?: AnnotationsDef;
 
   execute(doc: Document): void {
     if (doc.modelEntry(this.name)) {
@@ -80,18 +64,28 @@ export class DefineSource
       as: this.name,
       location: this.location,
     };
-    if (this.note) {
-      entry.annotation = structDef.annotation
-        ? {...this.note, inherits: structDef.annotation}
-        : this.note;
+    if (this.ownAnnotation) {
+      entry.annotations = structDef.annotations
+        ? {
+            ...this.ownAnnotation,
+            inherits: structDef.annotations,
+          }
+        : {...this.ownAnnotation};
     }
-    if (isPersistableSourceDef(entry)) {
+    if (isSourceDef(entry)) {
+      // Every source gets a stable identity for its own definition. referenceID
+      // is left as it arrived: set to the referenced source's sourceID for an
+      // unmodified rename (`source: a is b`), and absent for a source that
+      // defines its own shape (table/sql/query, or a modified/extended source,
+      // which DynamicSpace cleared).
       entry.sourceID = mkSourceID(this.name, this.location?.url);
-      entry.persistent = checkPersistAnnotation(entry).persist;
+      if (isPersistableSourceDef(entry)) {
+        entry.persistent = checkPersistAnnotation(entry).persist;
+      }
     }
     entry.partitionComposite =
       getPartitionCompositeDesc(
-        this.note,
+        this.ownAnnotation,
         structDef,
         this.sourceExpr ?? this
       ) ?? structDef.partitionComposite;
@@ -121,9 +115,7 @@ export class DefineSource
   ) {
     for (const parameter of parameters) {
       if (
-        structDef.fields.find(
-          field => (field.as ?? field.name) === parameter.name
-        )
+        structDef.fields.find(field => activeName(field) === parameter.name)
       ) {
         parameter.logError(
           'parameter-shadowing-field',

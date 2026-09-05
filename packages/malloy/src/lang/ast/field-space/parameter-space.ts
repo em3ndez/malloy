@@ -1,8 +1,6 @@
 /*
- * Copyright (c) Meta Platforms, Inc. and affiliates.
- *
- * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree.
+ * Copyright Contributors to the Malloy project
+ * SPDX-License-Identifier: MIT
  */
 
 import type {Dialect} from '../../../dialect';
@@ -13,6 +11,7 @@ import type {
   FieldSpace,
   QueryFieldSpace,
 } from '../types/field-space';
+import {currentGeneration} from '../types/field-space';
 import type {LookupResult} from '../types/lookup-result';
 import type {SpaceEntry} from '../types/space-entry';
 import {AbstractParameter} from '../types/space-param';
@@ -57,6 +56,7 @@ export class ParameterSpace implements FieldSpace {
         error: {
           message: `\`${name}\` is not defined`,
           code: 'parameter-not-found',
+          at: name,
         },
         found: undefined,
       };
@@ -68,6 +68,7 @@ export class ParameterSpace implements FieldSpace {
             .slice(1)
             .join('.')}\``,
           code: 'invalid-parameter-reference',
+          at: name,
         },
         found: undefined,
       };
@@ -102,5 +103,11 @@ export class ParameterSpace implements FieldSpace {
 
   accessProtectionLevel(): AccessModifierLabel {
     return 'private';
+  }
+
+  // Bindings are fixed by the constructor and never change, so this space
+  // contributes no invalidation of its own.
+  generation(): number {
+    return currentGeneration();
   }
 }

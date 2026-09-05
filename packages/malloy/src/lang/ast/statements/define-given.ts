@@ -4,7 +4,7 @@
  */
 
 import type {
-  Annotation,
+  AnnotationsDef,
   Expr,
   Given,
   GivenEntry,
@@ -25,7 +25,6 @@ import type {ExprValue} from '../types/expr-value';
 import type {DocStatement, Document} from '../types/malloy-element';
 import {DocStatementList, MalloyElement} from '../types/malloy-element';
 import type {Noteable} from '../types/noteable';
-import {extendNoteMethod} from '../types/noteable';
 
 // `filter<T>` defaults can't be type-checked via TD.eq — the filter
 // expression value shape doesn't match an atomic typeDef. Catch only
@@ -76,8 +75,7 @@ export class GivenDeclaration
 {
   elementType = 'given';
   readonly isNoteableObj = true;
-  extendNote = extendNoteMethod;
-  note?: Annotation;
+  ownAnnotation?: AnnotationsDef;
   readonly default?: ConstantExpression;
 
   constructor(
@@ -203,6 +201,26 @@ export class GivenDeclaration
               operators: [...bad].sort().join(', '),
             });
           }
+          // An inline default may fold an unsupplied `$REF` to that
+          // given's declared default, so every reachable regular default
+          // must also be inline-reducible. The closure is flat; inline
+          // members self-validate at their own declaration, so only
+          // regular ones need checking here.
+          for (const g of givenUsage ?? []) {
+            const refDecl = doc.documentGivens.get(g.id);
+            if (!refDecl || refDecl.inline || refDecl.default === undefined) {
+              continue;
+            }
+            const refBad = new Set<string>();
+            collectInlineBadOps(refDecl.default, refBad);
+            if (refBad.size > 0) {
+              this.default.logError('inline-bad-operator-in-ref', {
+                name: this.name,
+                refName: refDecl.name,
+                operators: [...refBad].sort().join(', '),
+              });
+            }
+          }
         }
       }
     }
@@ -217,7 +235,7 @@ export class GivenDeclaration
       defaultText,
       givenUsage,
       location: this.location,
-      annotation: this.note,
+      annotations: this.ownAnnotation ? {...this.ownAnnotation} : undefined,
       ...(this.inline ? {inline: true} : {}),
     };
     doc.documentGivens.set(id, givenIR);
@@ -241,7 +259,7 @@ export class GivenDeclaration
       },
       definition: {
         type: typeDefToString(this.typeDef),
-        annotation: this.note,
+        annotations: this.ownAnnotation ? {...this.ownAnnotation} : undefined,
         location: this.location,
         defaultText,
       },

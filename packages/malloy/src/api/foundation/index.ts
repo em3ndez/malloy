@@ -12,6 +12,9 @@ export type {
   CompileQueryOptions,
   BuildNode,
   BuildGraph,
+  BuildTarget,
+  BuildTargets,
+  ConnectionBuild,
 } from './types';
 export {EMPTY_BUILD_MANIFEST} from './types';
 
@@ -72,6 +75,8 @@ export {
   PersistSource,
   PreparedQuery,
   PreparedResult,
+  Reference,
+  type ReferenceKind,
 } from './core';
 
 // Result and Data classes

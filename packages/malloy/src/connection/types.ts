@@ -1,6 +1,5 @@
 import type {RunSQLOptions} from '../run_sql_options';
 import type {
-  Annotation,
   MalloyQueryData,
   QueryRecord,
   QueryRunStats,
@@ -15,8 +14,6 @@ import type {SQLSourceRequest} from '../lang/translate-response';
 export interface FetchSchemaOptions {
   // Fetch a fresh copy of the schema instead of using cache
   refreshTimestamp?: number;
-  /* This is an experimental feature */
-  modelAnnotation?: Annotation;
 }
 
 /**
@@ -76,9 +73,16 @@ export type ConnectionParameterValue =
   | Array<ConnectionParameterValue>
   | {[key: string]: ConnectionParameterValue};
 
+/**
+ * A value with no declared shape, supplied by a host overlay rather than
+ * written in a config file — an auth client, a session handle, anything live.
+ * Malloy never inspects one; it carries it from the overlay to the factory.
+ */
+export type OpaqueConnectionValue = object;
+
 export interface ConnectionConfig {
   name: string;
-  [key: string]: ConnectionParameterValue | undefined;
+  [key: string]: ConnectionParameterValue | OpaqueConnectionValue | undefined;
 }
 
 export interface ConnectionMetadata {

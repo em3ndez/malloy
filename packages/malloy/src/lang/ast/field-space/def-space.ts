@@ -1,8 +1,6 @@
 /*
- * Copyright (c) Meta Platforms, Inc. and affiliates.
- *
- * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree.
+ * Copyright Contributors to the Malloy project
+ * SPDX-License-Identifier: MIT
  */
 
 import type {AccessModifierLabel} from '../../../model';
@@ -30,6 +28,7 @@ export class DefSpace extends PassthroughSpace {
         error: {
           message: `Circular reference to '${this.circular.defineName}' in definition`,
           code: 'circular-reference-in-field-definition',
+          at: symbol[0],
         },
         found: undefined,
       };

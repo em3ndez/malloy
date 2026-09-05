@@ -1,8 +1,6 @@
 /*
- * Copyright (c) Meta Platforms, Inc. and affiliates.
- *
- * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree.
+ * Copyright Contributors to the Malloy project
+ * SPDX-License-Identifier: MIT
  */
 
 import type {
@@ -62,6 +60,13 @@ function unlike(disLiked: string[], x: string) {
  * XXXXFilterCompiler.compile() will move to XXXFilterExpression.compile()
  */
 
+// The `none` filter ("always false") compiles to a constant, independent of
+// column type or value; `not none` is "always true". Shared by the top-level
+// guard and every per-type compiler so the constant lives in one place.
+function noneToSQL(not: boolean | undefined): string {
+  return not ? 'true' : 'false';
+}
+
 export const FilterCompilers = {
   compile(
     t: string,
@@ -72,6 +77,14 @@ export const FilterCompilers = {
   ) {
     if (c === null) {
       return 'true';
+    }
+    // `none` is the always-false filter (companion to the empty/`null` filter,
+    // which is always-true above). It compiles to a constant independent of
+    // column type/value, so it is handled here before type dispatch — this is
+    // also the primary path for boolean, whose compiler has no switch and
+    // would otherwise route `none` through the null/false truth-table.
+    if (c.operator === 'none') {
+      return noneToSQL(c.not);
     }
     if (t === 'string' && isStringFilter(c)) {
       return FilterCompilers.stringCompile(c, x, d);
@@ -120,6 +133,8 @@ export const FilterCompilers = {
       }
       case 'null':
         return nc.not ? `${x} IS NOT NULL` : `${x} IS NULL`;
+      case 'none':
+        return noneToSQL(nc.not);
       case '()': {
         const wrapped =
           '(' + FilterCompilers.numberCompile(nc.expr, x, d) + ')';
@@ -150,7 +165,12 @@ export const FilterCompilers = {
      * not =false        |   T    |   F     |   NULL
      */
 
-    if (bc.operator === '=true') {
+    if (bc.operator === 'none') {
+      // Normally intercepted by compile()'s top-level guard; handled here too so
+      // booleanCompile is self-safe (this if-chain has no default, and `none`
+      // must not fall through to the null/false truth-table below).
+      return noneToSQL(bc.not);
+    } else if (bc.operator === '=true') {
       return bc.not ? `NOT ${px}` : x;
     } else if (bc.operator === '=false') {
       return bc.not ? x : `NOT ${px}`;
@@ -184,6 +204,8 @@ export const FilterCompilers = {
     switch (sc.operator) {
       case 'null':
         return sc.not ? `${x} IS NOT NULL` : `${x} IS NULL`;
+      case 'none':
+        return noneToSQL(sc.not);
       case 'empty':
         return sc.not ? `COALESCE(${x},'') != ''` : `COALESCE(${x},'') = ''`;
       case '=': {
@@ -394,7 +416,7 @@ export class TemporalFilterCompiler {
   }
 
   time(timeSQL: string): string {
-    if (this.timetype === 'timestamp') {
+    if (this.timetype !== 'date') {
       return timeSQL;
     }
     return this.d.sqlCast(
@@ -500,6 +522,8 @@ export class TemporalFilterCompiler {
       }
       case 'null':
         return tc.not ? `${x} IS NOT NULL` : `${x} IS NULL`;
+      case 'none':
+        return noneToSQL(tc.not);
       case '()': {
         const wrapped = '(' + this.compile(tc.expr) + ')';
         return tc.not ? `NOT ${wrapped}` : wrapped;

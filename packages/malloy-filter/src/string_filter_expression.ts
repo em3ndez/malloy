@@ -1,8 +1,6 @@
 /*
- * Copyright (c) Meta Platforms, Inc. and affiliates.
- *
- * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree.
+ * Copyright Contributors to the Malloy project
+ * SPDX-License-Identifier: MIT
  */
 
 import type {FilterParserResponse, StringFilter} from './filter_interface';
@@ -72,6 +70,8 @@ export const StringFilterExpression = {
         return sc.not ? '-null' : 'null';
       case 'empty':
         return sc.not ? '-empty' : 'empty';
+      case 'none':
+        return sc.not ? '-none' : 'none';
     }
   },
 };

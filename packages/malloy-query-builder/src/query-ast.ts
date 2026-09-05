@@ -1,9 +1,8 @@
 /*
- * Copyright (c) Meta Platforms, Inc. and affiliates.
- *
- * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree.
+ * Copyright Contributors to the Malloy project
+ * SPDX-License-Identifier: MIT
  */
+
 import * as Malloy from '@malloydata/malloy-interfaces';
 import type {TagSetValue} from '@malloydata/malloy-tag';
 import {Tag, TagParser} from '@malloydata/malloy-tag';
@@ -1476,8 +1475,7 @@ export interface IASTQueryDefinition extends IASTQueryOrViewDefinition {
 }
 
 export type ASTQueryArrowSource =
-  | ASTReferenceQueryArrowSource
-  | ASTRefinementQueryDefinition;
+  ASTReferenceQueryArrowSource | ASTRefinementQueryDefinition;
 export const ASTQueryArrowSource = {
   from(definition: Malloy.QueryArrowSource) {
     switch (definition.kind) {
@@ -4000,8 +3998,7 @@ export class ASTField
    */
   get segment() {
     const groupByOrAggregate = this.parent as
-      | ASTGroupByViewOperation
-      | ASTAggregateViewOperation;
+      ASTGroupByViewOperation | ASTAggregateViewOperation;
     const operationList = groupByOrAggregate.list;
     return operationList.segment;
   }
@@ -4758,8 +4755,7 @@ export class ASTCalculateViewOperation extends ASTObjectNode<
 }
 
 export type ASTFilter =
-  | ASTFilterWithFilterString
-  | ASTFilterWithLiteralEquality;
+  ASTFilterWithFilterString | ASTFilterWithLiteralEquality;
 export const ASTFilter = {
   from(filter: Malloy.Filter) {
     switch (filter.kind) {

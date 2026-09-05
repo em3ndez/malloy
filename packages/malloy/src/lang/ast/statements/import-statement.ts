@@ -1,24 +1,6 @@
 /*
- * Copyright 2023 Google LLC
- *
- * Permission is hereby granted, free of charge, to any person obtaining
- * a copy of this software and associated documentation files
- * (the "Software"), to deal in the Software without restriction,
- * including without limitation the rights to use, copy, modify, merge,
- * publish, distribute, sublicense, and/or sell copies of the Software,
- * and to permit persons to whom the Software is furnished to do so,
- * subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be
- * included in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
- * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
- * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
- * IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
- * CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
- * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
- * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ * Copyright Contributors to the Malloy project
+ * SPDX-License-Identifier: MIT
  */
 
 import type {ModelDataRequest} from '../../translate-response';
@@ -32,17 +14,8 @@ import {
   safeRecordGet,
 } from '../../../model/malloy_types';
 import {registerSource} from '../../../model/source_def_utils';
-import {findPersistentDependencies} from '../../../model/persist_utils';
+import {walkPersistentDependencies} from '../../../model/persist_utils';
 import {typeDefToString} from '../../../model/utils';
-import type {BuildNode} from '../../../api/foundation/types';
-
-/** Walk BuildNode tree and collect all sourceIDs */
-function collectSourceIDs(nodes: BuildNode[], into: Set<SourceID>): void {
-  for (const node of nodes) {
-    into.add(node.sourceID);
-    collectSourceIDs(node.dependsOn, into);
-  }
-}
 
 export class ImportSourceName extends MalloyElement {
   elementType = 'importSourceName';
@@ -198,7 +171,7 @@ export class ImportStatement
                       location: importOne.location,
                       definition: {
                         type: typeDefToString(givenIR.type),
-                        annotation: givenIR.annotation,
+                        annotations: givenIR.annotations,
                         location: givenIR.location,
                         defaultText: givenIR.defaultText,
                       },
@@ -211,13 +184,17 @@ export class ImportStatement
               importMe.as = dstName;
               doc.setEntry(dstName, {entry: importMe, exported: false});
 
-              // Collect dependencies for persistable sources
+              // Every source the walk touched, routes included — not just the
+              // persistent ones. A `#@ -persist` wrapper that adds a join is
+              // not a table, but it can be the only way to reach the tables
+              // under it, and this model has to be able to take the same route.
               if (isSourceDef(importMe) && isPersistableSourceDef(importMe)) {
-                const deps = findPersistentDependencies(
-                  importMe,
+                for (const found of walkPersistentDependencies(
+                  [importMe],
                   importedModel
-                );
-                collectSourceIDs(deps, neededSourceIDs);
+                )) {
+                  neededSourceIDs.add(found.sourceID);
+                }
               }
             }
           }
@@ -236,6 +213,12 @@ export class ImportStatement
               }
             }
           }
+
+          // Carry the imported model's `##` annotation closure into ours and
+          // record it as a direct predecessor edge (any `import` from a file
+          // contributes that file's whole model-annotation set, in import
+          // order). Shared with the extend-base path via `contributeModelAnnotations`.
+          doc.contributeModelAnnotations(importedModel);
 
           // Register hidden dependencies from child's registry
           for (const sourceID of neededSourceIDs) {

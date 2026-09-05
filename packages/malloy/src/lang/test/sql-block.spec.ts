@@ -1,67 +1,25 @@
 /*
- * Copyright 2023 Google LLC
- *
- * Permission is hereby granted, free of charge, to any person obtaining
- * a copy of this software and associated documentation files
- * (the "Software"), to deal in the Software without restriction,
- * including without limitation the rights to use, copy, modify, merge,
- * publish, distribute, sublicense, and/or sell copies of the Software,
- * and to permit persons to whom the Software is furnished to do so,
- * subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be
- * included in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
- * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
- * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
- * IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
- * CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
- * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
- * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ * Copyright Contributors to the Malloy project
+ * SPDX-License-Identifier: MIT
  */
 
 import {
-  TEST_DIALECT,
   TestTranslator,
-  aTableDef,
+  answerSQLSchemaRequests,
+  error,
   errorMessage,
   model,
 } from './test-translator';
 import './parse-expects';
 import {MalloyTranslator} from '../parse-malloy';
-import type {SQLSourceDef} from '../../model';
-import {sqlKey} from '../../model/sql_block';
-import type {SQLSourceRequest} from '../translate-response';
 
 describe('connection sql()', () => {
   const selStmt = 'SELECT * FROM aTable';
-  function makeSchemaResponse(sql: SQLSourceRequest): {
-    [key: string]: SQLSourceDef;
-  } {
-    const cname = sql.connection || 'bigquery';
-    const key = sqlKey(cname, sql.selectStr);
-    return {
-      [key]: {
-        type: 'sql_select',
-        name: key,
-        dialect: TEST_DIALECT,
-        connection: cname,
-        selectStr: selStmt,
-        fields: aTableDef.fields,
-      },
-    };
-  }
 
+  // These tests read the stored `selectStr` back, so the schema answers with
+  // the original statement rather than whatever interpolation produced.
   function translateWithSchemas(m: TestTranslator): void {
-    for (;;) {
-      const response = m.translate();
-      if (response.compileSQL) {
-        m.update({compileSQL: makeSchemaResponse(response.compileSQL)});
-      } else {
-        break;
-      }
-    }
+    answerSQLSchemaRequests(m, selStmt);
   }
 
   test('source from sql', () => {
@@ -164,9 +122,9 @@ describe('connection sql()', () => {
 
   describe('interpolations in sql blocks', () => {
     test('non-persistable source in interpolation fails', () => {
-      expect(
-        'source: wrapper is aConnection.sql("""SELECT * FROM %{ a }""")'
-      ).toLog(errorMessage('Cannot expand into a query'));
+      expect('source: wrapper is _db_.sql("""SELECT * FROM %{ a }""")').toLog(
+        errorMessage('Source is not persistable, cannot be used in SQL')
+      );
     });
     test('sql block as source in interpolation', () => {
       const m = model`
@@ -184,10 +142,23 @@ describe('connection sql()', () => {
       translateWithSchemas(m.translator);
       expect(m).toTranslate();
     });
+    test('partial query in interpolation is not silently accepted', () => {
+      // The interpolated query is written into the SQL phrase, so its
+      // pipeline has to be one the compiler can read.
+      const m = model`
+        run: _db_.sql("""SELECT * FROM %{ a -> { where: astr = 'x' } }""")
+          -> { select: * }
+      `;
+      translateWithSchemas(m.translator);
+      // `toLogAtLeast` because `SQLSource` builds its phrases twice, once to
+      // request the schema and once to record the select segments, so the
+      // interpolated query reports this twice.
+      expect(m).toLogAtLeast(error('ambiguous-view-type'));
+    });
     test('persistable query in interpolation', () => {
       const m = model`
         source: safe_query is  a -> { select: * }
-        run: aConnection.sql("""SELECT * FROM %{ safe_query }""") -> { select: * }
+        run: _db_.sql("""SELECT * FROM %{ safe_query }""") -> { select: * }
       `;
       translateWithSchemas(m.translator);
       expect(m).toTranslate();
@@ -207,7 +178,7 @@ describe('connection sql()', () => {
         const src = m.getSourceDef('sql_src');
         expect(src).toBeDefined();
         expect(src?.type).toBe('sql_select');
-        if (src && 'sourceID' in src && src.sourceID) {
+        if (src && src.sourceID) {
           const registryValue = modelDef.sourceRegistry[src.sourceID];
           expect(registryValue).toBeDefined();
           expect(registryValue?.entry).toMatchObject({
@@ -215,7 +186,7 @@ describe('connection sql()', () => {
             name: 'sql_src',
           });
         } else {
-          fail('Expected sql_src to have a sourceID');
+          fail('Expected sql_src to have an sourceID');
         }
       }
     });
@@ -241,7 +212,7 @@ describe('connection sql()', () => {
         expect(extSrc?.type).toBe('sql_select');
 
         // Base source should have sourceID
-        if (baseSrc && 'sourceID' in baseSrc && baseSrc.sourceID) {
+        if (baseSrc && baseSrc.sourceID) {
           const baseSourceID = baseSrc.sourceID;
           expect(baseSourceID).toContain('base_sql@');
 
@@ -252,7 +223,7 @@ describe('connection sql()', () => {
             fail('Expected extended_sql to have extends property');
           }
         } else {
-          fail('Expected base_sql to have a sourceID');
+          fail('Expected base_sql to have an sourceID');
         }
       }
     });

@@ -1,24 +1,6 @@
 /*
- * Copyright 2023 Google LLC
- *
- * Permission is hereby granted, free of charge, to any person obtaining
- * a copy of this software and associated documentation files
- * (the "Software"), to deal in the Software without restriction,
- * including without limitation the rights to use, copy, modify, merge,
- * publish, distribute, sublicense, and/or sell copies of the Software,
- * and to permit persons to whom the Software is furnished to do so,
- * subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be
- * included in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
- * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
- * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
- * IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
- * CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
- * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
- * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ * Copyright Contributors to the Malloy project
+ * SPDX-License-Identifier: MIT
  */
 
 import type {
@@ -46,8 +28,8 @@ import {BaseConnection} from '@malloydata/malloy/connection';
 import type {PrestoClientConfig, PrestoQuery} from '@prestodb/presto-js-client';
 import {PrestoClient} from '@prestodb/presto-js-client';
 import {randomUUID} from 'crypto';
-import type {ConnectionOptions} from 'trino-client';
-import {Trino, BasicAuth} from 'trino-client';
+import type {ConnectionOptions} from '@trinodb/trino-js-client';
+import {Trino, BasicAuth} from '@trinodb/trino-js-client';
 import {resultRowToQueryRecord} from './result-to-querydata';
 
 export interface TrinoManagerOptions {
@@ -61,10 +43,7 @@ export interface TrinoManagerOptions {
 }
 
 export type TrinoExtraConfigKey =
-  | 'ssl'
-  | 'session'
-  | 'extraCredential'
-  | 'extraHeaders';
+  'ssl' | 'session' | 'extraCredential' | 'extraHeaders';
 
 export interface TrinoConnectionConfiguration {
   server?: string;
@@ -83,7 +62,10 @@ export type TrinoConnectionOptions = ConnectionConfig;
 export interface BaseRunner {
   runSQL(
     sql: string,
-    options: RunSQLOptions
+    options: RunSQLOptions,
+    // Rendered by the connection; the runner places it itself, because a runner
+    // may wrap the statement it is given.
+    queryMetadataComment?: string
   ): Promise<{
     rows: unknown[][];
     columns: {name: string; type: string; error?: string}[];
@@ -112,11 +94,17 @@ class PrestoRunner implements BaseRunner {
     }
     this.client = new PrestoClient(prestoClientConfig);
   }
-  async runSQL(sql: string, options: RunSQLOptions = {}) {
+  async runSQL(
+    sql: string,
+    options: RunSQLOptions = {},
+    queryMetadataComment = ''
+  ) {
     let ret: PrestoQuery | undefined = undefined;
-    const q = options.rowLimit
-      ? `SELECT * FROM(${sql}) LIMIT ${options.rowLimit}`
-      : sql;
+    const q =
+      queryMetadataComment +
+      (options.rowLimit
+        ? `SELECT * FROM(${sql}) LIMIT ${options.rowLimit}`
+        : sql);
     let error: string | undefined = undefined;
     try {
       ret = (await this.client.query(q)) || [];
@@ -140,7 +128,7 @@ class TrinoRunner implements BaseRunner {
   client: Trino;
   constructor(config: TrinoConnectionConfiguration) {
     let server = config.server;
-    // trino-client has no separate port field — merge into the server URL
+    // the client has no separate port field — merge into the server URL
     if (server && config.port) {
       try {
         const url = new URL(server);
@@ -161,8 +149,12 @@ class TrinoRunner implements BaseRunner {
       auth: new BasicAuth(config.user!, config.password || ''),
     });
   }
-  async runSQL(sql: string, options: RunSQLOptions = {}) {
-    const result = await this.client.query(sql);
+  async runSQL(
+    sql: string,
+    options: RunSQLOptions = {},
+    queryMetadataComment = ''
+  ) {
+    const result = await this.client.query(queryMetadataComment + sql);
     let queryResult = await result.next();
     if (queryResult.value.error) {
       return {
@@ -297,7 +289,11 @@ export abstract class TrinoPrestoConnection
     _rowIndex = 0
   ): Promise<MalloyQueryData> {
     await this.ensureSetup();
-    const r = await this.client.runSQL(sqlCommand, options);
+    const r = await this.client.runSQL(
+      sqlCommand,
+      options,
+      this.queryMetadataComment(options.queryMetadata)
+    );
 
     if (r.error) {
       throw new Error(r.error);
@@ -596,9 +592,16 @@ class TrinoPrestoSchemaParser extends TinyParser {
     });
   }
 
+  /**
+   * Presto 0.284+ writes "Output[PlanNodeId N][NAME_LIST] => ...",
+   * earlier versions write "Output[NAME_LIST] => ...".
+   */
   fieldNameList(): string[] {
-    this.skipTo(']'); // Skip to end of plan
-    this.expect('['); // Expect start of name list
+    this.skipTo('[');
+    if (this.match('id', 'id')) {
+      // [PlanNodeId N] is the only group with two adjacent ids
+      this.skipTo('[');
+    }
     const fieldNames: string[] = [];
     for (;;) {
       const nmToken = this.expect('id');
